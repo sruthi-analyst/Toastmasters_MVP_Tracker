@@ -1,0 +1,27 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redirecting to Toastmasters MVP Tracker</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #faf8f5; color: #241f3a; font-family: Arial, sans-serif; }
+    .card { max-width: 420px; padding: 24px; background: #fff; border: 1px solid #ddd; border-radius: 12px; text-align: center; box-shadow: 0 12px 32px rgba(0,0,0,0.08); }
+    a { color: #6b5b95; text-decoration: none; font-weight: 700; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Use the server-backed MVP Tracker</h1>
+    <p>This legacy standalone page is deprecated.</p>
+    <p>If you opened this through the server, you should be redirected shortly.</p>
+    <p><a href="/">Go to the tracker now</a></p>
+  </div>
+  <script>
+    if (window.location.protocol.startsWith('http')) {
+      window.location.replace('/');
+    }
+  </script>
+</body>
+</html>

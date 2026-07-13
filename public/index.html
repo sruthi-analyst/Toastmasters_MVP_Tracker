@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Toastmasters MVP Tracker</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="mvp-app" id="mvpApp">
+    <div class="mvp-head">
+      <div>
+        <h1>Sri Eshwar Toastmasters — Chapter 2 MVP Tracker</h1>
+        <p>Weekly points, entered once, tallied automatically.</p>
+      </div>
+      <div class="mvp-headbtns">
+        <button class="mvp-btn ghost" id="downloadReportBtn">Download report</button>
+        <button class="mvp-btn ghost" id="changePwBtn">Change password</button>
+        <button class="mvp-btn ghost" id="logoutBtn">Log out</button>
+      </div>
+    </div>
+    <div class="mvp-tabs" id="mvpTabs">
+      <button class="mvp-tab active" data-tab="entry">Weekly Entry</button>
+      <button class="mvp-tab" data-tab="leaderboard">Leaderboard</button>
+      <button class="mvp-tab" data-tab="members">Members</button>
+      <button class="mvp-tab" data-tab="points">Point System</button>
+    </div>
+    <div class="mvp-body" id="mvpBody">
+      <div class="mvp-loading">Loading…</div>
+    </div>
+  </div>
+  <div class="mvp-toast" id="mvpToast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

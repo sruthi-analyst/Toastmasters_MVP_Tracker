@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Viewer — Toastmasters MVP Tracker</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="mvp-app" id="mvpApp">
+    <div class="mvp-head">
+      <div>
+        <h1>Sri Eshwar Toastmasters — Chapter 2 MVP Viewer</h1>
+        <p>View club members, point system, and leaderboard totals.</p>
+      </div>
+      <div class="mvp-headbtns">
+        <button class="mvp-btn ghost" id="downloadReportBtn">Download report</button>
+        <button class="mvp-btn ghost" id="logoutBtn">Log out</button>
+      </div>
+    </div>
+    <div class="mvp-tabs" id="mvpTabs">
+      <button class="mvp-tab active" data-tab="leaderboard">Leaderboard</button>
+      <button class="mvp-tab" data-tab="members">Members</button>
+      <button class="mvp-tab" data-tab="points">Point System</button>
+    </div>
+    <div class="mvp-body" id="mvpBody">
+      <div class="mvp-loading">Loading…</div>
+    </div>
+  </div>
+  <div class="mvp-toast" id="mvpToast"></div>
+  <script>
+(function(){
+
+let pointSystem = [];
+let members = [];
+let activeTab = 'leaderboard';
+let currentMonth = new Date().toISOString().slice(0,7);
+let leaderboardOpenMemberId = null;
+let rankEmojis = {1:'🥇', 2:'🥈', 3:'🥉'};
+
+const app = document.getElementById('mvpBody');
+const toastEl = document.getElementById('mvpToast');
+
+function toast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  setTimeout(()=>toastEl.classList.remove('show'), 1800);
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(path, opts){
+  const res = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts || {}));
+  if(res.status === 401){ window.location.href = '/login.html'; throw new Error('Not logged in'); }
+  if(!res.ok){ const data = await res.json().catch(()=>({})); throw new Error(data.error || 'Request failed'); }
+  return res.json();
+}
+
+async function loadAll(){
+  const data = await api('/api/viewer-data');
+  pointSystem = data.pointSystem;
+  members = data.members;
+  rankEmojis = data.rankEmojis || rankEmojis;
+  render();
+}
+
+function pointsById(id){ const p = pointSystem.find(p=>p.id===id); return p ? p.points : 0; }
+
+async function render(){
+  document.querySelectorAll('.mvp-tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===activeTab));
+  if(activeTab==='leaderboard') await renderLeaderboard();
+  else if(activeTab==='members') renderMembers();
+  else if(activeTab==='points') renderPoints();
+}
+
+async function downloadReport(){
+  const res = await fetch('/api/report/' + currentMonth);
+  if(!res.ok){
+    const data = await res.json().catch(()=>({}));
+    throw new Error(data.error || 'Unable to download report');
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `mvp-report-${currentMonth}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function renderLeaderboard(){
+  app.innerHTML = '<div class="mvp-loading">Loading leaderboard…</div>';
+  const res = await api('/api/leaderboard-details/' + currentMonth);
+  const rows = res.rows;
+  const maxPts = Math.max(1, ...rows.map(r=>r.points));
+
+  let html = `
+    <div class="mvp-week-controls">
+      <input type="month" id="monthPicker" value="${currentMonth}">
+      <span class="mvp-week-label">${res.weeksCounted} week${res.weeksCounted===1?'':'s'} logged this month</span>
+    </div>`;
+  if(rows.length===0 || rows.every(r=>r.points===0)){
+    html += '<div class="mvp-empty">No points logged yet for this month.</div>';
+  } else {
+    let currentRank = 0;
+    let lastPoints = null;
+    rows.forEach((r,i)=>{
+      if(lastPoints === null || r.points < lastPoints){
+        currentRank = i + 1;
+        lastPoints = r.points;
+      }
+      const pct = Math.round((r.points/maxPts)*100);
+      const isOpen = leaderboardOpenMemberId === r.id;
+      const medal = currentRank <= 3 && r.points > 0 ? rankEmojis[currentRank] || (currentRank === 1 ? '🥇' : currentRank === 2 ? '🥈' : '🥉') : '';
+      const showMedal = currentRank <= 3 && r.points > 0;
+      html += `<div class="mvp-leader-row mvp-leader-row-toggle${isOpen ? ' open' : ''}" data-member-id="${r.id}">
+        <div class="mvp-rank">
+          ${showMedal ? `<span class="mvp-rank-medal">${escapeHtml(medal)}</span>` : ''}
+          <span class="mvp-rank-number">${currentRank}</span>
+        </div>
+        <div class="mvp-leader-name">${escapeHtml(r.name)}</div>
+        <div class="mvp-bar-track"><div class="mvp-bar-fill" style="width:${pct}%"></div></div>
+        <div class="mvp-leader-pts">${r.points}</div>
+      </div>`;
+      if(isOpen){
+        html += `<div class="mvp-leader-details">`;
+        if(!r.weeks || r.weeks.length === 0){
+          html += `<div class="mvp-empty">No entries recorded this month.</div>`;
+        } else {
+          r.weeks.forEach(w=>{
+            html += `<div class="mvp-detail-week">
+              <div class="mvp-detail-week-header">Week of ${w.weekStart}</div>
+              <div class="mvp-detail-activities">`;
+            if(w.activities.length === 0){
+              html += `<div class="mvp-empty">No activities checked.</div>`;
+            } else {
+              w.activities.forEach(a=>{
+                html += `<div class="mvp-detail-activity">
+                  <div class="mvp-detail-activity-main">${escapeHtml(a.activity)}</div>
+                  ${a.details ? `<div class="mvp-detail-activity-meta">${escapeHtml(a.details)}</div>` : ''}
+                  <span class="pt">+${a.points}</span>
+                </div>`;
+              });
+            }
+            html += `</div></div>`;
+          });
+        }
+        html += `</div>`;
+      }
+    });
+  }
+  app.innerHTML = html;
+  document.getElementById('monthPicker').addEventListener('change', (e)=>{
+    currentMonth = e.target.value;
+    leaderboardOpenMemberId = null;
+    renderLeaderboard();
+  });
+
+  document.querySelectorAll('[data-member-id]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      leaderboardOpenMemberId = el.dataset.memberId === leaderboardOpenMemberId ? null : el.dataset.memberId;
+      renderLeaderboard();
+    });
+  });
+}
+
+function renderMembers(){
+  let html = `<div class="mvp-section-title">Club members (${members.length})</div><table class="mvp-table"><tbody>`;
+  members.forEach(m=>{
+    html += `<tr><td>${escapeHtml(m.name)}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  app.innerHTML = html;
+}
+
+function renderPoints(){
+  const grouped = {};
+  pointSystem.forEach(p => { (grouped[p.category] = grouped[p.category] || []).push(p); });
+  let html = '';
+  Object.keys(grouped).forEach(cat => {
+    html += `<div class="mvp-section-title">${escapeHtml(cat)}</div><table class="mvp-table"><tbody>`;
+    grouped[cat].forEach(p => {
+      html += `<tr><td>
+          <div>${escapeHtml(p.activity)}</div>
+          ${p.details ? `<div class="mvp-activity-details">${escapeHtml(p.details)}</div>` : ''}
+        </td><td style="text-align:right;">${p.points}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  });
+  app.innerHTML = html;
+}
+
+document.getElementById('downloadReportBtn').addEventListener('click', async ()=>{
+  try{
+    await downloadReport();
+    toast('Report downloaded');
+  }catch(err){
+    toast(err.message);
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  await api('/api/logout', {method:'POST'});
+  window.location.href = '/login.html';
+});
+
+document.querySelectorAll('.mvp-tab').forEach(t=>{
+  t.addEventListener('click', ()=>{
+    activeTab = t.dataset.tab;
+    render();
+  });
+});
+
+loadAll();
+})();
+  </script>

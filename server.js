@@ -94,7 +94,8 @@ async function readDB() {
 
 async function writeDB(db) {
   if (!supabase) return;
-  await supabase.from('app_data').upsert({ id: 1, data: db });
+  const { data, error } = await supabase.from('app_data').upsert({ id: 1, data: db });
+  if (error) console.error('Supabase Write Error:', error);
 }
 
 ensureDB();

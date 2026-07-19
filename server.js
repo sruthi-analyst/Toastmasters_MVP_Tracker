@@ -6,8 +6,6 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, 'data');
-const DB_PATH = path.join(DATA_DIR, 'db.json');
 const PORT = process.env.PORT || 3000;
 
 const DEFAULT_POINTS = [
@@ -53,34 +51,50 @@ function normalizeEntryActivities(list) {
   }).filter(Boolean);
 }
 
-// ---------- File-based storage ----------
+// ---------- Supabase storage ----------
+const { createClient } = require('@supabase/supabase-js');
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+let supabase;
+if (supabaseUrl && supabaseKey) {
+  supabase = createClient(supabaseUrl, supabaseKey);
+} else {
+  console.warn('WARNING: SUPABASE_URL and SUPABASE_KEY not found in environment variables.');
+}
 
-function ensureDB() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) {
-    const initial = {
-      pointSystem: DEFAULT_POINTS.map(([category, activity, points]) => ({
-        id: uid(), category, activity, points
-      })),
-      members: [],
-      entries: {}, // weekStart (YYYY-MM-DD) -> { memberId: [activityId, ...] }
-      rankEmojis: { 1: '🥇', 2: '🥈', 3: '🥉' },
-      passwordHash: bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'changeme123', 10)
-    };
-    writeDB(initial);
-    console.log('Created new data/db.json with a first-run admin password.');
-    console.log('Log in once, then change the password immediately from the dashboard.');
+const INITIAL_DB = {
+  pointSystem: DEFAULT_POINTS.map(([category, activity, points]) => ({
+    id: uid(), category, activity, points
+  })),
+  members: [],
+  entries: {}, // weekStart (YYYY-MM-DD) -> { memberId: [activityId, ...] }
+  rankEmojis: { 1: '🥇', 2: '🥈', 3: '🥉' },
+  passwordHash: bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'changeme123', 10)
+};
+
+async function ensureDB() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase.from('app_data').select('data').eq('id', 1).single();
+    if (error || !data) {
+      await writeDB(INITIAL_DB);
+      console.log('Initialized Supabase app_data table with first-run config.');
+    }
+  } catch (err) {
+    console.error('Error ensuring DB:', err);
   }
 }
 
-function readDB() {
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+async function readDB() {
+  if (!supabase) return INITIAL_DB;
+  const { data, error } = await supabase.from('app_data').select('data').eq('id', 1).single();
+  if (error || !data) return INITIAL_DB;
+  return data.data;
 }
 
-function writeDB(db) {
-  const tmp = DB_PATH + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-  fs.renameSync(tmp, DB_PATH);
+async function writeDB(db) {
+  if (!supabase) return;
+  await supabase.from('app_data').upsert({ id: 1, data: db });
 }
 
 ensureDB();
@@ -112,7 +126,7 @@ function requireAdmin(req, res, next) {
 
 // ---------- Auth routes ----------
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { password, role } = req.body || {};
   if (role === 'viewer') {
     if (!password || !bcrypt.compareSync(password, VIEWER_PASSWORD_HASH)) {
@@ -123,7 +137,7 @@ app.post('/api/login', (req, res) => {
     return res.json({ ok: true, role: 'viewer' });
   }
 
-  const db = readDB();
+  const db = await readDB();
   if (!password || !bcrypt.compareSync(password, db.passwordHash)) {
     return res.status(401).json({ error: 'Incorrect password' });
   }
@@ -140,9 +154,9 @@ app.get('/api/me', (req, res) => {
   res.json({ loggedIn: !!(req.session && req.session.role), role: req.session?.role || null });
 });
 
-app.post('/api/change-password', requireAdmin, (req, res) => {
+app.post('/api/change-password', requireAdmin, async (req, res) => {
   const { oldPassword, newPassword } = req.body || {};
-  const db = readDB();
+  const db = await readDB();
   if (!oldPassword || !bcrypt.compareSync(oldPassword, db.passwordHash)) {
     return res.status(401).json({ error: 'Current password is incorrect' });
   }
@@ -150,14 +164,14 @@ app.post('/api/change-password', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'New password must be at least 6 characters' });
   }
   db.passwordHash = bcrypt.hashSync(newPassword, 10);
-  writeDB(db);
+  await writeDB(db);
   res.json({ ok: true });
 });
 
 // ---------- Data routes (all require login) ----------
 
-app.get('/api/data', requireAdmin, (req, res) => {
-  const db = readDB();
+app.get('/api/data', requireAdmin, async (req, res) => {
+  const db = await readDB();
   res.json({
     pointSystem: db.pointSystem,
     members: db.members,
@@ -165,8 +179,8 @@ app.get('/api/data', requireAdmin, (req, res) => {
   });
 });
 
-app.get('/api/viewer-data', requireAuth, (req, res) => {
-  const db = readDB();
+app.get('/api/viewer-data', requireAuth, async (req, res) => {
+  const db = await readDB();
   res.json({
     pointSystem: db.pointSystem,
     members: db.members,
@@ -174,59 +188,59 @@ app.get('/api/viewer-data', requireAuth, (req, res) => {
   });
 });
 
-app.post('/api/points', requireAdmin, (req, res) => {
+app.post('/api/points', requireAdmin, async (req, res) => {
   const { pointSystem } = req.body || {};
   if (!Array.isArray(pointSystem)) return res.status(400).json({ error: 'pointSystem must be an array' });
-  const db = readDB();
+  const db = await readDB();
   db.pointSystem = pointSystem;
-  writeDB(db);
+  await writeDB(db);
   res.json({ ok: true });
 });
 
-app.post('/api/rank-emojis', requireAdmin, (req, res) => {
+app.post('/api/rank-emojis', requireAdmin, async (req, res) => {
   const { rankEmojis } = req.body || {};
   if (!rankEmojis || typeof rankEmojis !== 'object') return res.status(400).json({ error: 'rankEmojis object required' });
-  const db = readDB();
+  const db = await readDB();
   db.rankEmojis = {
     1: String(rankEmojis[1] || '🥇'),
     2: String(rankEmojis[2] || '🥈'),
     3: String(rankEmojis[3] || '🥉')
   };
-  writeDB(db);
+  await writeDB(db);
   res.json({ ok: true, rankEmojis: db.rankEmojis });
 });
 
-app.post('/api/members', requireAdmin, (req, res) => {
+app.post('/api/members', requireAdmin, async (req, res) => {
   const { members } = req.body || {};
   if (!Array.isArray(members)) return res.status(400).json({ error: 'members must be an array' });
-  const db = readDB();
+  const db = await readDB();
   db.members = members;
-  writeDB(db);
+  await writeDB(db);
   res.json({ ok: true });
 });
 
-app.get('/api/entries/:week', requireAdmin, (req, res) => {
-  const db = readDB();
+app.get('/api/entries/:week', requireAdmin, async (req, res) => {
+  const db = await readDB();
   res.json(db.entries[req.params.week] || {});
 });
 
-app.post('/api/entries/:week', requireAdmin, (req, res) => {
+app.post('/api/entries/:week', requireAdmin, async (req, res) => {
   const { data } = req.body || {};
   if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data object required' });
-  const db = readDB();
+  const db = await readDB();
   const normalized = {};
   Object.keys(data).forEach(memberId => {
     normalized[memberId] = normalizeEntryActivities(data[memberId]);
   });
   db.entries[req.params.week] = normalized;
-  writeDB(db);
+  await writeDB(db);
   res.json({ ok: true });
 });
 
 // Aggregate totals for a given month (YYYY-MM), summed across all weeks that fall in it
-app.get('/api/leaderboard/:month', requireAuth, (req, res) => {
+app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
-  const db = readDB();
+  const db = await readDB();
   const pointsById = {};
   db.pointSystem.forEach(p => { pointsById[p.id] = p.points; });
 
@@ -252,9 +266,9 @@ app.get('/api/leaderboard/:month', requireAuth, (req, res) => {
   res.json({ weeksCounted, rows });
 });
 
-app.get('/api/leaderboard-details/:month', requireAuth, (req, res) => {
+app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
-  const db = readDB();
+  const db = await readDB();
   const pointById = {};
   db.pointSystem.forEach(p => { pointById[p.id] = { activity: p.activity, points: p.points }; });
 
@@ -309,7 +323,7 @@ app.get('/api/leaderboard-details/:month', requireAuth, (req, res) => {
 
 app.get('/api/report/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
-  const db = readDB();
+  const db = await readDB();
   const categoryNames = [...new Set(db.pointSystem.map(p => p.category))];
   const categories = categoryNames.sort();
 

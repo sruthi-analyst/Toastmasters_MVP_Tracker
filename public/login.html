@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sign in — Toastmasters MVP Tracker</title>
-<link rel="stylesheet" href="/styles.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Toastmasters MVP Tracker</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
+
 <body>
   <div class="login-wrap">
     <div class="login-card">
@@ -23,32 +25,34 @@
     </div>
   </div>
   <script>
-    document.getElementById('loginForm').addEventListener('submit', async (e)=>{
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const password = document.getElementById('password').value;
       const role = document.getElementById('role').value;
       const errEl = document.getElementById('loginError');
       errEl.textContent = '';
-      try{
+      try {
         const res = await fetch('/api/login', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({password, role})
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password, role })
         });
-        if(res.ok){
-          if(role === 'viewer') {
+        if (res.ok) {
+          if (role === 'viewer') {
             window.location.href = '/viewer.html';
           } else {
             window.location.href = '/';
           }
         } else {
-          const data = await res.json().catch(()=>({}));
+          const data = await res.json().catch(() => ({}));
           errEl.textContent = data.error || 'Incorrect password';
         }
-      }catch(err){
+      } catch (err) {
         errEl.textContent = 'Could not reach the server. Try again.';
       }
     });
   </script>
 </body>
+
 </html>
+<!-- Testing the working of database permanent storage ability -->

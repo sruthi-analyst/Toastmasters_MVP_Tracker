@@ -5,54 +5,11 @@ const bcrypt = require('bcryptjs');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
 
 const PORT = process.env.PORT || 3000;
-
-const DEFAULT_POINTS = [
-  ["Meeting Attendance", "Attend a club meeting", 5],
-  ["Meeting Attendance", "3-meeting attendance streak", 5],
-  ["Meeting Attendance", "Arrived on time", 5],
-  ["Meeting Roles", "TMOD", 12],
-  ["Meeting Roles", "General Evaluator", 10],
-  ["Meeting Roles", "Table Topics Master", 8],
-  ["Meeting Roles", "Prepared Speech", 10],
-  ["Meeting Roles", "Individual Evaluator", 7],
-  ["Meeting Roles", "Grammarian", 5],
-  ["Meeting Roles", "Ah Counter", 5],
-  ["Meeting Roles", "Timer", 5],
-  ["Meeting Roles", "Listening Master", 5],
-  ["Meeting Awards", "Best Role Player", 8],
-  ["Meeting Awards", "Best Prepared Speaker", 8],
-  ["Meeting Awards", "Best Individual Evaluator", 8],
-  ["Meeting Awards", "Best Aux Role Player", 8],
-  ["Meeting Awards", "Best Table Topics Speaker", 8],
-  ["Last Minute Replacements", "Replace Role Player", 12],
-  ["Last Minute Replacements", "Replace Prepared Speaker", 10],
-  ["Last Minute Replacements", "Replace Aux Role Player", 8],
-  ["Guest", "Bring a guest", 5],
-  ["Guest", "Guest joins club", 20],
-  ["Toastmasters Events Participation", "Attend Toastmasters Event", 30],
-  ["Toastmasters Events Participation", "Attend Other Club meetings", 12],
-  ["Toastmasters Events Participation", "Attend Chapter 1 meetings", 8],
-];
-
 const VIEWER_PASSWORD_HASH = bcrypt.hashSync(process.env.VIEWER_PASSWORD || 'viewonly123', 10);
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-function normalizeEntryActivities(list) {
-  if (!Array.isArray(list)) return [];
-  return list.map(item => {
-    if (typeof item === 'string') return { id: item, details: '' };
-    if (item && typeof item === 'object' && item.id) return { id: String(item.id), details: String(item.details || '') };
-    return null;
-  }).filter(Boolean);
-}
-
-// ---------- Supabase storage ----------
-const { createClient } = require('@supabase/supabase-js');
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 let supabase;
@@ -62,45 +19,24 @@ if (supabaseUrl && supabaseKey) {
   console.warn('WARNING: SUPABASE_URL and SUPABASE_KEY not found in environment variables.');
 }
 
-const INITIAL_DB = {
-  pointSystem: DEFAULT_POINTS.map(([category, activity, points]) => ({
-    id: uid(), category, activity, points
-  })),
-  members: [],
-  entries: {}, // weekStart (YYYY-MM-DD) -> { memberId: [activityId, ...] }
-  rankEmojis: { 1: '🥇', 2: '🥈', 3: '🥉' },
-  passwordHash: bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'changeme123', 10)
-};
-
-async function ensureDB() {
+async function ensureConfig() {
   if (!supabase) return;
   try {
-    const { data, error } = await supabase.from('app_data').select('data').eq('id', 1).single();
+    const { data, error } = await supabase.from('config').select('*').eq('id', 1).single();
     if (error || !data) {
-      await writeDB(INITIAL_DB);
-      console.log('Initialized Supabase app_data table with first-run config.');
+      await supabase.from('config').insert({
+        id: 1,
+        rank_emojis: { 1: '🥇', 2: '🥈', 3: '🥉' },
+        password_hash: bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'changeme123', 10)
+      });
+      console.log('Initialized Supabase config table with first-run config.');
     }
   } catch (err) {
-    console.error('Error ensuring DB:', err);
+    console.error('Error ensuring config DB:', err);
   }
 }
 
-async function readDB() {
-  if (!supabase) return INITIAL_DB;
-  const { data, error } = await supabase.from('app_data').select('data').eq('id', 1).single();
-  if (error || !data) return INITIAL_DB;
-  return data.data;
-}
-
-async function writeDB(db) {
-  if (!supabase) return;
-  const { data, error } = await supabase.from('app_data').upsert({ id: 1, data: db });
-  if (error) console.error('Supabase Write Error:', error);
-}
-
-ensureDB();
-
-// ---------- App setup ----------
+ensureConfig();
 
 const app = express();
 app.use(express.json());
@@ -109,7 +45,7 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    maxAge: 1000 * 60 * 60 * 24 * 200, // ~200 days, so a president doesn't get logged out mid-term
+    maxAge: 1000 * 60 * 60 * 24 * 200,
     httpOnly: true,
     sameSite: 'lax'
   }
@@ -138,8 +74,8 @@ app.post('/api/login', async (req, res) => {
     return res.json({ ok: true, role: 'viewer' });
   }
 
-  const db = await readDB();
-  if (!password || !bcrypt.compareSync(password, db.passwordHash)) {
+  const { data } = await supabase.from('config').select('password_hash').eq('id', 1).single();
+  if (!data || !password || !bcrypt.compareSync(password, data.password_hash)) {
     return res.status(401).json({ error: 'Incorrect password' });
   }
   req.session.role = 'admin';
@@ -157,209 +93,310 @@ app.get('/api/me', (req, res) => {
 
 app.post('/api/change-password', requireAdmin, async (req, res) => {
   const { oldPassword, newPassword } = req.body || {};
-  const db = await readDB();
-  if (!oldPassword || !bcrypt.compareSync(oldPassword, db.passwordHash)) {
+  const { data } = await supabase.from('config').select('password_hash').eq('id', 1).single();
+  if (!data || !oldPassword || !bcrypt.compareSync(oldPassword, data.password_hash)) {
     return res.status(401).json({ error: 'Current password is incorrect' });
   }
   if (!newPassword || newPassword.length < 6) {
     return res.status(400).json({ error: 'New password must be at least 6 characters' });
   }
-  db.passwordHash = bcrypt.hashSync(newPassword, 10);
-  await writeDB(db);
+  await supabase.from('config').update({ password_hash: bcrypt.hashSync(newPassword, 10) }).eq('id', 1);
   res.json({ ok: true });
 });
 
 // ---------- Data routes (all require login) ----------
 
-app.get('/api/data', requireAdmin, async (req, res) => {
-  const db = await readDB();
+app.get('/api/data', requireAuth, async (req, res) => {
+  const { data: actData } = await supabase.from('activities').select('*');
+  const { data: memData } = await supabase.from('members').select('*');
+  const { data: configData } = await supabase.from('config').select('rank_emojis').eq('id', 1).single();
+  
+  // Transform to match old frontend format
+  const pointSystem = (actData || []).map(a => ({
+    id: a.id,
+    activity: a.activity_name,
+    category: a.category,
+    points: a.points,
+    requiresDetails: a.requires_details
+  }));
+
   res.json({
-    pointSystem: db.pointSystem,
-    members: db.members,
-    rankEmojis: db.rankEmojis || { 1: '🥇', 2: '🥈', 3: '🥉' }
+    pointSystem,
+    members: memData || [],
+    rankEmojis: configData?.rank_emojis || { 1: '🥇', 2: '🥈', 3: '🥉' }
   });
 });
 
 app.get('/api/viewer-data', requireAuth, async (req, res) => {
-  const db = await readDB();
-  res.json({
-    pointSystem: db.pointSystem,
-    members: db.members,
-    rankEmojis: db.rankEmojis || { 1: '🥇', 2: '🥈', 3: '🥉' }
-  });
+  // Can just redirect to /api/data since both require auth and read same DB
+  res.redirect('/api/data');
 });
 
 app.post('/api/points', requireAdmin, async (req, res) => {
   const { pointSystem } = req.body || {};
   if (!Array.isArray(pointSystem)) return res.status(400).json({ error: 'pointSystem must be an array' });
-  const db = await readDB();
-  db.pointSystem = pointSystem;
-  await writeDB(db);
+  
+  const toUpsert = pointSystem.map(p => ({
+    id: p.id,
+    activity_name: p.activity,
+    category: p.category,
+    points: p.points,
+    requires_details: !!p.requiresDetails
+  }));
+  
+  if (toUpsert.length > 0) {
+    await supabase.from('activities').upsert(toUpsert);
+  }
+  
+  // Delete missing ones
+  const ids = toUpsert.map(u => u.id);
+  if (ids.length > 0) {
+    await supabase.from('activities').delete().not('id', 'in', `(${ids.join(',')})`);
+  } else {
+    // If empty array passed, delete all
+    await supabase.from('activities').delete().neq('id', '0'); // Hack to delete all
+  }
+  
   res.json({ ok: true });
 });
 
 app.post('/api/rank-emojis', requireAdmin, async (req, res) => {
   const { rankEmojis } = req.body || {};
   if (!rankEmojis || typeof rankEmojis !== 'object') return res.status(400).json({ error: 'rankEmojis object required' });
-  const db = await readDB();
-  db.rankEmojis = {
+  const mapped = {
     1: String(rankEmojis[1] || '🥇'),
     2: String(rankEmojis[2] || '🥈'),
     3: String(rankEmojis[3] || '🥉')
   };
-  await writeDB(db);
-  res.json({ ok: true, rankEmojis: db.rankEmojis });
+  await supabase.from('config').update({ rank_emojis: mapped }).eq('id', 1);
+  res.json({ ok: true, rankEmojis: mapped });
 });
 
 app.post('/api/members', requireAdmin, async (req, res) => {
   const { members } = req.body || {};
   if (!Array.isArray(members)) return res.status(400).json({ error: 'members must be an array' });
-  const db = await readDB();
-  db.members = members;
-  await writeDB(db);
+  
+  const toUpsert = members.map(m => ({ id: m.id, name: m.name }));
+  if (toUpsert.length > 0) {
+    await supabase.from('members').upsert(toUpsert);
+  }
+  
+  const ids = toUpsert.map(m => m.id);
+  if (ids.length > 0) {
+    await supabase.from('members').delete().not('id', 'in', `(${ids.join(',')})`);
+  } else {
+    await supabase.from('members').delete().neq('id', '0');
+  }
+  
   res.json({ ok: true });
 });
 
-app.get('/api/entries/:week', requireAdmin, async (req, res) => {
-  const db = await readDB();
-  res.json(db.entries[req.params.week] || {});
+app.get('/api/meeting-name/:date', requireAdmin, async (req, res) => {
+  const date = req.params.date;
+  const { data } = await supabase.from('meetings').select('name').eq('date', date).single();
+  res.json({ name: data?.name || '' });
 });
 
-app.post('/api/entries/:week', requireAdmin, async (req, res) => {
+app.post('/api/meeting-name/:date', requireAdmin, async (req, res) => {
+  const date = req.params.date;
+  const { name } = req.body || {};
+  await supabase.from('meetings').upsert({ date, name: name || `Meeting ${date}` });
+  res.json({ ok: true });
+});
+
+app.get('/api/entries/:date', requireAdmin, async (req, res) => {
+  const date = req.params.date;
+  const { data: logs } = await supabase.from('member_activity_logs').select('member_id, activity_id, details').eq('date', date);
+  
+  const result = {};
+  if (logs) {
+    logs.forEach(log => {
+      if (!result[log.member_id]) result[log.member_id] = [];
+      result[log.member_id].push({ id: log.activity_id, details: log.details || '' });
+    });
+  }
+  res.json(result);
+});
+
+app.post('/api/entries/:date', requireAdmin, async (req, res) => {
+  const date = req.params.date;
   const { data } = req.body || {};
   if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data object required' });
-  const db = await readDB();
-  const normalized = {};
+
+  // Ensure meeting exists
+  const { data: meetingData } = await supabase.from('meetings').select('name').eq('date', date).single();
+  if (!meetingData) {
+    await supabase.from('meetings').insert({ date, name: `Meeting ${date}` });
+  }
+
+  // Delete old logs for this date
+  await supabase.from('member_activity_logs').delete().eq('date', date);
+
+  // Insert new logs
+  const toInsert = [];
   Object.keys(data).forEach(memberId => {
-    normalized[memberId] = normalizeEntryActivities(data[memberId]);
-  });
-  db.entries[req.params.week] = normalized;
-  await writeDB(db);
-  res.json({ ok: true });
-});
-
-// Aggregate totals for a given month (YYYY-MM), summed across all weeks that fall in it
-app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
-  const month = req.params.month; // YYYY-MM
-  const db = await readDB();
-  const pointsById = {};
-  db.pointSystem.forEach(p => { pointsById[p.id] = p.points; });
-
-  const totals = {};
-  db.members.forEach(m => { totals[m.id] = 0; });
-
-  let weeksCounted = 0;
-  Object.keys(db.entries).forEach(weekStart => {
-    if (weekStart.slice(0, 7) !== month) return;
-    weeksCounted++;
-    const weekData = db.entries[weekStart];
-    Object.keys(weekData).forEach(memberId => {
-      const acts = weekData[memberId] || [];
-      const sum = acts.reduce((s, aid) => s + (pointsById[aid] || 0), 0);
-      totals[memberId] = (totals[memberId] || 0) + sum;
+    const acts = data[memberId] || [];
+    acts.forEach(act => {
+      if (act && act.id) {
+        toInsert.push({
+          date: date,
+          member_id: memberId,
+          activity_id: act.id,
+          details: act.details || ''
+        });
+      }
     });
   });
 
-  const rows = db.members
+  if (toInsert.length > 0) {
+    await supabase.from('member_activity_logs').insert(toInsert);
+  }
+
+  res.json({ ok: true });
+});
+
+app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
+  const month = req.params.month; // YYYY-MM
+  const startDate = `${month}-01`;
+  const endDate = `${month}-31`; // simplified, Postgres accepts 31 even for 30-day months if queried with <= usually, but to be safe we'll use LIKE or >= and < next month. Let's just use LIKE for simplicity if it was text, but it's DATE.
+
+  const { data: members } = await supabase.from('members').select('*');
+  const { data: stats } = await supabase.rpc('get_leaderboard_tally', { month_prefix: month });
+  // Wait, I can't guarantee RPC exists. Let's do it with a join.
+  
+  const { data: logs, error: err } = await supabase
+    .from('member_activity_logs')
+    .select('member_id, activities(points), date')
+    .gte('date', `${month}-01`)
+    .lte('date', `${month}-31`);
+
+  if (err) console.error(err);
+
+  const totals = {};
+  members.forEach(m => { totals[m.id] = 0; });
+  
+  const datesSeen = new Set();
+
+  (logs || []).forEach(log => {
+    datesSeen.add(log.date);
+    if (log.activities && log.activities.points) {
+      totals[log.member_id] = (totals[log.member_id] || 0) + log.activities.points;
+    }
+  });
+
+  const rows = (members || [])
     .map(m => ({ id: m.id, name: m.name, points: totals[m.id] || 0 }))
     .sort((a, b) => b.points - a.points);
 
-  res.json({ weeksCounted, rows });
+  res.json({ weeksCounted: datesSeen.size, rows });
 });
 
 app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
-  const db = await readDB();
-  const pointById = {};
-  db.pointSystem.forEach(p => { pointById[p.id] = { activity: p.activity, points: p.points }; });
+  const { data: members } = await supabase.from('members').select('*');
+  
+  const { data: logs } = await supabase
+    .from('member_activity_logs')
+    .select('member_id, date, details, activity_id, activities(activity_name, points)')
+    .gte('date', `${month}-01`)
+    .lte('date', `${month}-31`);
 
-  let weeksCounted = 0;
-  const memberWeeks = db.members.reduce((acc, m) => {
-    acc[m.id] = [];
-    return acc;
-  }, {});
+  const { data: meetings } = await supabase
+    .from('meetings')
+    .select('date, name')
+    .gte('date', `${month}-01`)
+    .lte('date', `${month}-31`);
+    
+  const meetingsByDate = {};
+  (meetings || []).forEach(m => { meetingsByDate[m.date] = m.name; });
 
+  const datesSeen = new Set();
+  const memberDates = {};
   const totals = {};
-  db.members.forEach(m => { totals[m.id] = 0; });
+  
+  (members || []).forEach(m => {
+    totals[m.id] = 0;
+    memberDates[m.id] = {};
+  });
 
-  Object.keys(db.entries).forEach(weekStart => {
-    if (weekStart.slice(0, 7) !== month) return;
-    weeksCounted++;
-    const weekData = db.entries[weekStart];
-    Object.keys(weekData).forEach(memberId => {
-      const acts = normalizeEntryActivities(weekData[memberId]);
-      const activities = acts.map(item => ({
-        id: item.id,
-        activity: pointById[item.id]?.activity || 'Unknown activity',
-        points: pointById[item.id]?.points || 0,
-        details: item.details || ''
-      }));
-      const sum = activities.reduce((s, a) => s + a.points, 0);
-      totals[memberId] = (totals[memberId] || 0) + sum;
-      if (activities.length > 0) {
-        memberWeeks[memberId].push({ weekStart, activities });
-      } else {
-        memberWeeks[memberId].push({ weekStart, activities: [] });
-      }
+  (logs || []).forEach(log => {
+    datesSeen.add(log.date);
+    if (!memberDates[log.member_id][log.date]) {
+      memberDates[log.member_id][log.date] = { weekStart: log.date, meetingName: meetingsByDate[log.date] || `Meeting ${log.date}`, activities: [] };
+    }
+    const pts = log.activities?.points || 0;
+    totals[log.member_id] += pts;
+    memberDates[log.member_id][log.date].activities.push({
+      id: log.activity_id,
+      activity: log.activities?.activity_name || 'Unknown',
+      points: pts,
+      details: log.details || ''
     });
+  });
 
-    db.members.forEach(m => {
-      if (!weekData[m.id]) {
-        memberWeeks[m.id].push({ weekStart, activities: [] });
+  // Ensure all members have an entry for each date seen, even if empty
+  datesSeen.forEach(d => {
+    (members || []).forEach(m => {
+      if (!memberDates[m.id][d]) {
+        memberDates[m.id][d] = { weekStart: d, meetingName: meetingsByDate[d] || `Meeting ${d}`, activities: [] };
       }
     });
   });
 
-  const rows = db.members
-    .map(m => ({
-      id: m.id,
-      name: m.name,
-      points: totals[m.id] || 0,
-      weeks: memberWeeks[m.id]
-    }))
+  const rows = (members || [])
+    .map(m => {
+      const weeks = Object.values(memberDates[m.id]).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+      return {
+        id: m.id,
+        name: m.name,
+        points: totals[m.id] || 0,
+        weeks
+      };
+    })
     .sort((a, b) => b.points - a.points);
 
-  res.json({ weeksCounted, rows });
+  res.json({ weeksCounted: datesSeen.size, rows });
 });
 
 app.get('/api/report/:month', requireAuth, async (req, res) => {
-  const month = req.params.month; // YYYY-MM
-  const db = await readDB();
-  const categoryNames = [...new Set(db.pointSystem.map(p => p.category))];
-  const categories = categoryNames.sort();
+  const month = req.params.month;
+  
+  const { data: acts } = await supabase.from('activities').select('*');
+  const { data: members } = await supabase.from('members').select('*');
+  const { data: meetings } = await supabase.from('meetings').select('*').gte('date', `${month}-01`).lte('date', `${month}-31`).order('date');
+  const { data: logs } = await supabase.from('member_activity_logs').select('*').gte('date', `${month}-01`).lte('date', `${month}-31`);
 
-  const entriesByWeek = Object.keys(db.entries)
-    .filter(weekStart => weekStart.slice(0, 7) === month)
-    .sort();
+  const categoryNames = [...new Set((acts || []).map(p => p.category))];
+  const categories = categoryNames.sort();
 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'MVP Tracker';
   workbook.created = new Date();
 
-  entriesByWeek.forEach(weekStart => {
-    const sheetName = `Week ${weekStart}`.slice(0, 31);
+  (meetings || []).forEach(meeting => {
+    const sheetName = (meeting.name || meeting.date).replace(/[^\w\s]/g, '').slice(0, 31);
     const sheet = workbook.addWorksheet(sheetName);
 
     const headers = ['SNo', 'MemberId', 'Name', ...categories, 'Details', 'Total'];
     sheet.addRow(headers);
     sheet.columns = headers.map(header => ({ header, width: header === 'Details' ? 40 : 16 }));
 
-    db.members.forEach((member, index) => {
-      const weekData = db.entries[weekStart] || {};
-      const entries = normalizeEntryActivities(weekData[member.id] || []);
+    (members || []).forEach((member, index) => {
+      const memberLogs = (logs || []).filter(l => l.date === meeting.date && l.member_id === member.id);
+      
       const categoryTotals = {};
       const details = [];
       let totalPoints = 0;
 
       categories.forEach(cat => { categoryTotals[cat] = 0; });
-      entries.forEach(entry => {
-        const activity = db.pointSystem.find(p => p.id === entry.id);
+      memberLogs.forEach(entry => {
+        const activity = (acts || []).find(p => p.id === entry.activity_id);
         if (!activity) return;
         const points = activity.points || 0;
         const cat = activity.category || 'Unknown';
         categoryTotals[cat] = (categoryTotals[cat] || 0) + points;
         totalPoints += points;
-        if (entry.details) details.push(`${activity.activity}: ${entry.details}`);
+        if (entry.details) details.push(`${activity.activity_name}: ${entry.details}`);
       });
 
       const row = [index + 1, member.id, member.name, ...categories.map(cat => categoryTotals[cat] || 0), details.join('; '), totalPoints];

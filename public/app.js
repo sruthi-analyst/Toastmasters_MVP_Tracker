@@ -4,7 +4,8 @@ let pointSystem = [];
 let members = [];
 let activeTab = 'entry';
 let openMemberId = null;
-let currentWeekStart = mondayOf(new Date());
+let currentDate = new Date().toISOString().slice(0,10);
+let currentMeetingName = '';
 let entryCache = {};
 let currentMonth = monthKey(new Date());
 let leaderboardOpenMemberId = null;
@@ -22,12 +23,8 @@ function toast(msg){
 
 function uid(){ return Math.random().toString(36).slice(2,10); }
 
-function mondayOf(d){
-  const dt = new Date(d);
-  const day = dt.getDay();
-  const diff = (day === 0 ? -6 : 1) - day;
-  dt.setDate(dt.getDate() + diff);
-  return dt.toISOString().slice(0,10);
+function formatDate(d){
+  return new Date(d).toISOString().slice(0,10);
 }
 function monthKey(d){
   return new Date(d).toISOString().slice(0,7);
@@ -87,21 +84,31 @@ function render(){
   else if(activeTab === 'points') renderPoints();
 }
 
-async function loadEntry(weekStart){
-  if(entryCache[weekStart]) return entryCache[weekStart];
-  const data = await api('/api/entries/' + weekStart);
-  entryCache[weekStart] = data;
+async function loadEntry(date){
+  if(entryCache[date]) return entryCache[date];
+  const data = await api('/api/entries/' + date);
+  entryCache[date] = data;
   return data;
 }
-async function saveEntry(weekStart, data){
-  entryCache[weekStart] = data;
-  await api('/api/entries/' + weekStart, {method:'POST', body: JSON.stringify({data})});
+async function saveEntry(date, data){
+  entryCache[date] = data;
+  await api('/api/entries/' + date, {method:'POST', body: JSON.stringify({data})});
+}
+
+async function loadMeetingName(date){
+  const res = await api('/api/meeting-name/' + date);
+  return res.name;
+}
+async function saveMeetingName(date, name){
+  await api('/api/meeting-name/' + date, {method:'POST', body: JSON.stringify({name})});
 }
 
 // ---- Weekly Entry Tab ----
 async function renderEntry(){
-  app.innerHTML = `<div class="mvp-loading">Loading week…</div>`;
-  const weekData = await loadEntry(currentWeekStart);
+  app.innerHTML = `<div class="mvp-loading">Loading date…</div>`;
+  const weekData = await loadEntry(currentDate);
+  currentMeetingName = await loadMeetingName(currentDate);
+  
   const grouped = {};
   pointSystem.forEach(p=>{
     (grouped[p.category] = grouped[p.category] || []).push(p);
@@ -109,8 +116,8 @@ async function renderEntry(){
 
   let html = `
     <div class="mvp-week-controls">
-      <input type="date" id="weekPicker" value="${currentWeekStart}">
-      <span class="mvp-week-label">Week starting (Monday auto-selected)</span>
+      <input type="date" id="datePicker" value="${currentDate}">
+      <input type="text" id="meetingName" value="${escapeHtml(currentMeetingName)}" placeholder="Meeting Name (e.g., Meet 30)">
     </div>
   `;
 
@@ -155,17 +162,42 @@ async function renderEntry(){
 
   app.innerHTML = html;
 
-  document.getElementById('weekPicker').addEventListener('change', (e)=>{
-    currentWeekStart = mondayOf(e.target.value);
+  document.getElementById('datePicker').addEventListener('change', (e)=>{
+    currentDate = e.target.value;
     openMemberId = null;
     renderEntry();
   });
 
+  document.getElementById('meetingName').addEventListener('change', async (e)=>{
+    currentMeetingName = e.target.value.trim();
+    await saveMeetingName(currentDate, currentMeetingName);
+    toast('Meeting name saved');
+  });
+
   document.querySelectorAll('[data-toggle]').forEach(el=>{
-    el.addEventListener('click', ()=>{
+    el.addEventListener('click', async ()=>{
       const mid = el.dataset.toggle;
-      openMemberId = (openMemberId === mid) ? null : mid;
-      renderEntry();
+      const card = document.querySelector(`.mvp-member-card[data-mid="${mid}"]`);
+      if (!card) return;
+
+      const isClosing = card.classList.contains('open');
+
+      if (isClosing) {
+        // Close it and save
+        card.classList.remove('open');
+        const data = await loadEntry(currentDate);
+        await saveEntry(currentDate, data);
+        toast('Points saved');
+      } else {
+        // Open it (and optionally close others to act like an accordion)
+        document.querySelectorAll('.mvp-member-card.open').forEach(async c => {
+          c.classList.remove('open');
+          // If closing another member's card, save their data too
+          const data = await loadEntry(currentDate);
+          await saveEntry(currentDate, data);
+        });
+        card.classList.add('open');
+      }
     });
   });
 
@@ -173,7 +205,7 @@ async function renderEntry(){
     cb.addEventListener('change', async (e)=>{
       const mid = e.target.dataset.mid;
       const aid = e.target.dataset.aid;
-      const data = await loadEntry(currentWeekStart);
+      const data = await loadEntry(currentDate);
       const items = normalizeEntryValue(data[mid] || []);
       const existing = items.find(item=>item.id===aid);
       const activity = getPointActivity(aid);
@@ -185,9 +217,19 @@ async function renderEntry(){
         if(idx !== -1) items.splice(idx,1);
       }
       data[mid] = items;
-      await saveEntry(currentWeekStart, data);
-      renderEntry();
+      
+      // Update local cache but DO NOT save to server or fully re-render yet
+      entryCache[currentDate] = data;
+
+      // Instantly update the points total on the screen
+      const total = items.reduce((s,a)=>s+pointsById(a.id),0);
+      const totalSpan = document.querySelector(`.mvp-member-card[data-mid="${mid}"] .mvp-member-total`);
+      if(totalSpan) totalSpan.textContent = `${total} pts this week`;
+
       if(e.target.checked && requiresDetails){
+        // For activities requiring details, we must save and re-render to show the input box
+        await saveEntry(currentDate, data);
+        renderEntry();
         setTimeout(()=>{
           const detailInput = document.querySelector(`input[data-detail-mid="${mid}"][data-detail-aid="${aid}"]`);
           if(detailInput) detailInput.focus();
@@ -200,13 +242,13 @@ async function renderEntry(){
     inp.addEventListener('change', async (e)=>{
       const mid = e.target.dataset.detailMid;
       const aid = e.target.dataset.detailAid;
-      const data = await loadEntry(currentWeekStart);
+      const data = await loadEntry(currentDate);
       const items = normalizeEntryValue(data[mid] || []);
       const item = items.find(item=>item.id===aid);
       if(item){
         item.details = e.target.value.trim();
         data[mid] = items;
-        await saveEntry(currentWeekStart, data);
+        await saveEntry(currentDate, data);
         renderEntry();
         toast('Details saved');
       }
@@ -259,7 +301,7 @@ async function renderLeaderboard(){
         } else {
           r.weeks.forEach(w=>{
             html += `<div class="mvp-detail-week">
-              <div class="mvp-detail-week-header">Week of ${w.weekStart}</div>
+              <div class="mvp-detail-week-header">${escapeHtml(w.meetingName)} (${w.weekStart})</div>
               <div class="mvp-detail-activities">`;
             if(w.activities.length === 0){
               html += `<div class="mvp-empty">No activities checked.</div>`;

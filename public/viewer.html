@@ -163,7 +163,7 @@ async function renderLeaderboard(forceRefresh = false){
         } else {
           r.weeks.forEach(w=>{
             html += `<div class="mvp-detail-week">
-              <div class="mvp-detail-week-header">Week of ${w.weekStart}</div>
+              <div class="mvp-detail-week-header">${escapeHtml(w.meetingName)} (${w.weekStart})</div>
               <div class="mvp-detail-activities">`;
             if(w.activities.length === 0){
               html += `<div class="mvp-empty">No activities checked.</div>`;
@@ -212,7 +212,15 @@ function renderMembers(){
     </div>
     <table class="mvp-table"><tbody>`;
   activeMembers.forEach(m=>{
-    html += `<tr><td>${escapeHtml(m.name)}</td></tr>`;
+    html += `<tr>
+      <td style="width:40px; padding:4px 8px; text-align:center; vertical-align:middle;">
+          ${m.avatar 
+              ? `<img src="${m.avatar}" style="width:28px; height:28px; border-radius:50%; object-fit:cover; display:inline-block; border:1px solid rgba(255,255,255,0.25);" />` 
+              : `<span style="font-size:14px; opacity:0.25; display:inline-block; vertical-align:middle;">📷</span>`
+          }
+      </td>
+      <td style="vertical-align:middle;">${escapeHtml(m.name)}</td>
+    </tr>`;
   });
   html += '</tbody></table>';
   app.innerHTML = html;

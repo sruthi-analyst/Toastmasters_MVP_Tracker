@@ -36,6 +36,7 @@ let members = [];
 let activeTab = 'leaderboard';
 let currentMonth = new Date().toISOString().slice(0,7);
 let leaderboardOpenMemberId = null;
+let leaderboardCache = {};
 let rankEmojis = {1:'🥇', 2:'🥈', 3:'🥉'};
 
 const app = document.getElementById('mvpBody');
@@ -52,6 +53,9 @@ function escapeHtml(str){
 }
 
 async function api(path, opts){
+  if (opts && opts.method && opts.method !== 'GET') {
+    leaderboardCache = {};
+  }
   const res = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts || {}));
   if(res.status === 401){ window.location.href = '/login.html'; throw new Error('Not logged in'); }
   if(!res.ok){ const data = await res.json().catch(()=>({})); throw new Error(data.error || 'Request failed'); }
@@ -92,9 +96,12 @@ async function downloadReport(){
   URL.revokeObjectURL(url);
 }
 
-async function renderLeaderboard(){
-  app.innerHTML = '<div class="mvp-loading">Loading leaderboard…</div>';
-  const res = await api('/api/leaderboard-details/' + currentMonth);
+async function renderLeaderboard(forceRefresh = false){
+  if (forceRefresh || !leaderboardCache[currentMonth]) {
+    app.innerHTML = '<div class="mvp-loading">Loading leaderboard…</div>';
+    leaderboardCache[currentMonth] = await api('/api/leaderboard-details/' + currentMonth);
+  }
+  const res = leaderboardCache[currentMonth];
   const rows = res.rows;
   const maxPts = Math.max(1, ...rows.map(r=>r.points));
 
@@ -169,12 +176,28 @@ async function renderLeaderboard(){
 }
 
 function renderMembers(){
-  let html = `<div class="mvp-section-title">Club members (${members.length})</div><table class="mvp-table"><tbody>`;
-  members.forEach(m=>{
+  const activeMembers = members.filter(m => {
+    const joined = m.joined_month || '';
+    const removed = m.removed_month || '';
+    return (!joined || joined <= currentMonth) && (!removed || removed >= currentMonth);
+  });
+  let html = `
+    <div class="mvp-section-title" style="margin-bottom:1rem; display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
+      Club members in 
+      <input type="month" id="memberMonthPicker" value="${currentMonth}" style="font-family:inherit; font-size:inherit; font-weight:inherit; color:var(--lilac-deep, #6b5b95); border:none; background:transparent; cursor:pointer; border-bottom:2px dashed var(--lilac-deep, #6b5b95); padding:0 4px; outline:none; width:140px; vertical-align:middle; display:inline-block;"> 
+      (${activeMembers.length})
+    </div>
+    <table class="mvp-table"><tbody>`;
+  activeMembers.forEach(m=>{
     html += `<tr><td>${escapeHtml(m.name)}</td></tr>`;
   });
   html += '</tbody></table>';
   app.innerHTML = html;
+
+  document.getElementById('memberMonthPicker').addEventListener('change', (e) => {
+    currentMonth = e.target.value;
+    renderMembers();
+  });
 }
 
 function renderPoints(){

@@ -10,6 +10,7 @@
     let currentMonth = monthKey(new Date());
     let leaderboardOpenMemberId = null;
     let leaderboardDetails = {};
+    let leaderboardCache = {};
     let rankEmojis = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
     const app = document.getElementById('mvpBody');
@@ -31,6 +32,9 @@
     }
 
     async function api(path, opts) {
+        if (opts && opts.method && opts.method !== 'GET') {
+            leaderboardCache = {};
+        }
         const res = await fetch(path, Object.assign({
             headers: { 'Content-Type': 'application/json' }
         }, opts || {}));
@@ -92,6 +96,7 @@
     }
     async function saveEntry(date, data) {
         entryCache[date] = data;
+        leaderboardCache = {};
         await api('/api/entries/' + date, { method: 'POST', body: JSON.stringify({ data }) });
     }
 
@@ -121,10 +126,17 @@
     </div>
   `;
 
-        if (members.length === 0) {
-            html += `<div class="mvp-empty">No members yet. Add them in the Members tab.</div>`;
+        const currentEntryMonth = currentDate.slice(0, 7);
+        const activeMembers = members.filter(m => {
+            const joined = m.joined_month || '';
+            const removed = m.removed_month || '';
+            return (!joined || joined <= currentEntryMonth) && (!removed || removed >= currentEntryMonth);
+        });
+
+        if (activeMembers.length === 0) {
+            html += `<div class="mvp-empty">No active members in this month. Add them in the Members tab.</div>`;
         } else {
-            members.forEach(m => {
+            activeMembers.forEach(m => {
                 const checked = normalizeEntryValue(weekData[m.id] || []);
                 const total = checked.reduce((s, a) => s + pointsById(a.id), 0);
                 const isOpen = openMemberId === m.id;
@@ -257,9 +269,12 @@
     }
 
     // ---- Leaderboard Tab ----
-    async function renderLeaderboard() {
-        app.innerHTML = `<div class="mvp-loading">Tallying points…</div>`;
-        const res = await api('/api/leaderboard-details/' + currentMonth);
+    async function renderLeaderboard(forceRefresh = false) {
+        if (forceRefresh || !leaderboardCache[currentMonth]) {
+            app.innerHTML = `<div class="mvp-loading">Tallying points…</div>`;
+            leaderboardCache[currentMonth] = await api('/api/leaderboard-details/' + currentMonth);
+        }
+        const res = leaderboardCache[currentMonth];
         const rows = res.rows;
         leaderboardDetails = rows.reduce((acc, r) => { acc[r.id] = r; return acc; }, {});
         const maxPts = Math.max(1, ...rows.map(r => r.points));
@@ -362,13 +377,23 @@
 
     // ---- Members Tab ----
     function renderMembers() {
+        const activeMembers = members.filter(m => {
+            const joined = m.joined_month || '';
+            const removed = m.removed_month || '';
+            return (!joined || joined <= currentMonth) && (!removed || removed >= currentMonth);
+        });
+
         let html = `
         <div class="mvp-members-split" style="display:flex; gap:2rem; flex-wrap:wrap; align-items:flex-start; width:100%;">
             <div style="flex:1.2; min-width:320px;">
-                <div class="mvp-section-title">Club members (${members.length})</div>
+                <div class="mvp-section-title" style="margin-bottom:1rem; display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
+                    Active members in 
+                    <input type="month" id="memberMonthPicker" value="${currentMonth}" style="font-family:inherit; font-size:inherit; font-weight:inherit; color:var(--lilac-deep, #6b5b95); border:none; background:transparent; cursor:pointer; border-bottom:2px dashed var(--lilac-deep, #6b5b95); padding:0 4px; outline:none; width:140px; vertical-align:middle; display:inline-block;"> 
+                    (${activeMembers.length})
+                </div>
                 <table class="mvp-table"><tbody>`;
                 
-        members.forEach(m => {
+        activeMembers.forEach(m => {
             html += `<tr>
       <td style="width:40px; padding:4px 8px; text-align:center; vertical-align:middle;">
           ${m.avatar 
@@ -377,7 +402,10 @@
           }
       </td>
       <td><input type="text" data-edit-member="${m.id}" value="${escapeHtml(m.name)}" style="font-family:Georgia,serif;font-size:13.5px;border:none;background:transparent;width:100%;"></td>
-      <td style="width:60px;text-align:right;"><button class="mvp-btn danger" data-del-member="${m.id}">remove</button></td>
+      <td style="width:140px;text-align:right;">
+          <button class="mvp-btn" data-soft-del="${m.id}" style="padding:4px 8px;margin-right:4px;">remove</button>
+          <button class="mvp-btn danger" data-hard-del="${m.id}" style="padding:4px 8px;">delete</button>
+      </td>
     </tr>`;
         });
         html += `</tbody></table>`;
@@ -385,7 +413,7 @@
     <input type="text" id="newMemberName" placeholder="New member name">
     <button class="mvp-btn" id="addMemberBtn">Add member</button>
   </div>
-  <div class="mvp-small-note">Scales to 35+ members with no changes needed.</div>
+  <div class="mvp-small-note">"Remove" hides members from the selected month onwards while preserving history. "Delete" erases them permanently from all history.</div>
             </div>
             
             <div style="flex:0.8; min-width:280px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); padding:1.5rem; border-radius:8px; box-sizing:border-box;">
@@ -395,14 +423,17 @@
                         <label style="display:block; font-size:12px; color:rgba(255,255,255,0.5); margin-bottom:6px;">Select Member</label>
                         <select id="uploadMemberSelect" style="width:100%; padding:8px; border-radius:4px; background:#1a1530; border:1px solid rgba(255,255,255,0.15); color:white; font-family:Georgia,serif; font-size:13.5px; outline:none;">
                             <option value="">-- Choose Member --</option>
-                            ${members.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('')}
+                            ${activeMembers.map(m => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('')}
                         </select>
                     </div>
                     <div>
                         <label style="display:block; font-size:12px; color:rgba(255,255,255,0.5); margin-bottom:6px;">Choose Photo File</label>
                         <input type="file" id="memberPhotoFile" accept="image/*" style="width:100%; padding:6px; border-radius:4px; background:#1a1530; border:1px solid rgba(255,255,255,0.15); color:white; font-size:12px; outline:none;">
                     </div>
-                    <button class="mvp-btn" id="uploadPhotoBtn" style="align-self:flex-start; margin-top:0.4rem; padding:8px 18px;">Upload Photo</button>
+                    <div style="display:flex; gap:0.5rem; margin-top:0.4rem;">
+                        <button class="mvp-btn" id="uploadPhotoBtn" style="padding:8px 14px;">Upload</button>
+                        <button class="mvp-btn danger" id="removePhotoBtn" style="padding:8px 14px;">Remove Photo</button>
+                    </div>
                 </div>
             </div>
         </div>`;
@@ -420,20 +451,37 @@
                 }
             });
         });
-        document.querySelectorAll('[data-del-member]').forEach(btn => {
+        document.querySelectorAll('[data-soft-del]').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                const id = e.target.dataset.delMember;
-                members = members.filter(m => m.id !== id);
-                await api('/api/members', { method: 'POST', body: JSON.stringify({ members }) });
-                renderMembers();
-                toast('Member removed');
+                const id = e.target.dataset.softDel;
+                const m = memberById(id);
+                if (m) {
+                    m.removed_month = currentMonth;
+                    await api('/api/members', { method: 'POST', body: JSON.stringify({ members }) });
+                    renderMembers();
+                    toast('Member removed starting ' + currentMonth);
+                }
+            });
+        });
+        document.querySelectorAll('[data-hard-del]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.target.dataset.hardDel;
+                if (!confirm('Are you sure you want to permanently delete this member? All their photos and past logs will be permanently deleted.')) return;
+                try {
+                    await api(`/api/members/${id}`, { method: 'DELETE' });
+                    members = members.filter(m => m.id !== id);
+                    renderMembers();
+                    toast('Member permanently deleted');
+                } catch (err) {
+                    toast('Delete failed: ' + err.message);
+                }
             });
         });
         document.getElementById('addMemberBtn').addEventListener('click', async () => {
             const inp = document.getElementById('newMemberName');
             const name = inp.value.trim();
             if (!name) return;
-            members.push({ id: uid(), name });
+            members.push({ id: uid(), name, joined_month: currentMonth, removed_month: null });
             members.sort((a, b) => a.name.localeCompare(b.name));
             await api('/api/members', { method: 'POST', body: JSON.stringify({ members }) });
             renderMembers();
@@ -475,6 +523,33 @@
                 }
             };
             reader.readAsDataURL(file);
+        });
+
+        document.getElementById('removePhotoBtn').addEventListener('click', async () => {
+            const memberId = document.getElementById('uploadMemberSelect').value;
+            if (!memberId) {
+                toast('Please select a member');
+                return;
+            }
+            if (!confirm('Are you sure you want to remove this member\'s photo?')) return;
+            try {
+                await api(`/api/members/${memberId}/avatar`, {
+                    method: 'POST',
+                    body: JSON.stringify({ avatar: null })
+                });
+                const m = memberById(memberId);
+                if (m) m.avatar = null;
+                toast('Photo removed successfully');
+                document.getElementById('uploadMemberSelect').value = '';
+                renderMembers();
+            } catch (err) {
+                toast('Remove failed: ' + err.message);
+            }
+        });
+
+        document.getElementById('memberMonthPicker').addEventListener('change', (e) => {
+            currentMonth = e.target.value;
+            renderMembers();
         });
     }
 

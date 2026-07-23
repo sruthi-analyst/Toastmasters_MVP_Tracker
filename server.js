@@ -176,30 +176,39 @@ app.post('/api/members', requireAdmin, async (req, res) => {
   const { members } = req.body || {};
   if (!Array.isArray(members)) return res.status(400).json({ error: 'members must be an array' });
 
-  // Fetch existing avatars to prevent overwriting them during member lists update
-  const { data: existing } = await supabase.from('members').select('id, avatar');
+  // Fetch existing members columns to prevent overwriting during bulk update
+  const { data: existing } = await supabase.from('members').select('id, avatar, joined_month, removed_month');
   const avatarMap = {};
+  const joinedMap = {};
+  const removedMap = {};
   (existing || []).forEach(e => {
     avatarMap[e.id] = e.avatar;
+    joinedMap[e.id] = e.joined_month;
+    removedMap[e.id] = e.removed_month;
   });
 
   const toUpsert = members.map(m => ({
     id: m.id,
     name: m.name,
-    avatar: avatarMap[m.id] || null
+    avatar: m.avatar !== undefined ? m.avatar : (avatarMap[m.id] || null),
+    joined_month: m.joined_month !== undefined ? m.joined_month : (joinedMap[m.id] || null),
+    removed_month: m.removed_month !== undefined ? m.removed_month : (removedMap[m.id] || null)
   }));
 
   if (toUpsert.length > 0) {
     await supabase.from('members').upsert(toUpsert);
   }
 
-  const ids = toUpsert.map(m => m.id);
-  if (ids.length > 0) {
-    await supabase.from('members').delete().not('id', 'in', `(${ids.join(',')})`);
-  } else {
-    await supabase.from('members').delete().neq('id', '0');
-  }
+  res.json({ ok: true });
+});
 
+app.delete('/api/members/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('members').delete().eq('id', id);
+  if (error) {
+    console.error('Error hard deleting member:', error);
+    return res.status(500).json({ error: error.message });
+  }
   res.json({ ok: true });
 });
 
@@ -303,7 +312,10 @@ app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
   const { startDate, endDate } = getMonthDateRange(month);
 
-  const { data: members } = await supabase.from('members').select('*');
+  const { data: allMembers } = await supabase.from('members').select('*');
+  const members = (allMembers || []).filter(m => {
+    return (!m.joined_month || m.joined_month <= month) && (!m.removed_month || m.removed_month >= month);
+  });
 
   const { data: logs, error: err } = await supabase
     .from('member_activity_logs')
@@ -337,13 +349,17 @@ app.get('/api/podium/:month', async (req, res) => {
   const month = req.params.month;
   const { startDate, endDate } = getMonthDateRange(month);
 
-  const { data: members, error: membersError } =
+  const { data: allMembers, error: membersError } =
     await supabase
       .from('members')
       .select('*');
 
   if (membersError)
     return res.status(500).json({ error: membersError.message });
+
+  const members = (allMembers || []).filter(m => {
+    return (!m.joined_month || m.joined_month <= month) && (!m.removed_month || m.removed_month >= month);
+  });
 
   const { data: logs, error: logsError } =
     await supabase
@@ -387,7 +403,10 @@ app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
   const { startDate, endDate } = getMonthDateRange(month);
 
-  const { data: members } = await supabase.from('members').select('*');
+  const { data: allMembers } = await supabase.from('members').select('*');
+  const members = (allMembers || []).filter(m => {
+    return (!m.joined_month || m.joined_month <= month) && (!m.removed_month || m.removed_month >= month);
+  });
 
   const { data: logs, error: logsError } = await supabase
     .from('member_activity_logs')
@@ -461,7 +480,12 @@ app.get('/api/report/:month', requireAuth, async (req, res) => {
   const { startDate, endDate } = getMonthDateRange(month);
 
   const { data: acts } = await supabase.from('activities').select('*');
-  const { data: members } = await supabase.from('members').select('*');
+  const { data: allMembers } = await supabase.from('members').select('*');
+  const members = (allMembers || [])
+    .filter(m => {
+      return (!m.joined_month || m.joined_month <= month) && (!m.removed_month || m.removed_month >= month);
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
   const { data: meetings } = await supabase.from('meetings').select('*').gte('date', startDate).lte('date', endDate).order('date');
   const { data: logs } = await supabase.from('member_activity_logs').select('*').gte('date', startDate).lte('date', endDate);
 
@@ -476,30 +500,131 @@ app.get('/api/report/:month', requireAuth, async (req, res) => {
     const sheetName = (meeting.name || meeting.date).replace(/[^\w\s]/g, '').slice(0, 31);
     const sheet = workbook.addWorksheet(sheetName);
 
-    const headers = ['SNo', 'MemberId', 'Name', ...categories, 'Details', 'Total'];
+    const headers = [
+      'sno',
+      'MemberId',
+      'Name',
+      'On Time',
+      'Attendance',
+      '3 Meet Streak',
+      'Meeting Roles',
+      'Meeting Awards',
+      'Replacement',
+      'Guest',
+      'Events Attended',
+      'Details',
+      'Overall'
+    ];
     sheet.addRow(headers);
-    sheet.columns = headers.map(header => ({ header, width: header === 'Details' ? 40 : 16 }));
+    sheet.columns = headers.map(header => ({ header, width: (header === 'Details' || header === 'Name') ? 35 : 15 }));
+
+    // Style Header Row
+    const headerRow = sheet.getRow(1);
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF6B5B95' } // theme color purple
+      };
+      cell.font = {
+        name: 'Segoe UI',
+        color: { argb: 'FFFFFFFF' }, // white text
+        bold: true,
+        size: 11
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
 
     (members || []).forEach((member, index) => {
       const memberLogs = (logs || []).filter(l => l.date === meeting.date && l.member_id === member.id);
 
-      const categoryTotals = {};
+      let onTimeDetail = '';
+      let attendanceDetail = '';
+      let streakPoints = 0;
+      let meetingRolesPts = 0;
+      let meetingAwardsPts = 0;
+      let replacementPts = 0;
+      let guestPts = 0;
+      let eventsAttendedPts = 0;
       const details = [];
       let totalPoints = 0;
 
-      categories.forEach(cat => { categoryTotals[cat] = 0; });
       memberLogs.forEach(entry => {
         const activity = (acts || []).find(p => p.id === entry.activity_id);
         if (!activity) return;
         const points = activity.points || 0;
-        const cat = activity.category || 'Unknown';
-        categoryTotals[cat] = (categoryTotals[cat] || 0) + points;
+        const actName = (activity.activity_name || '').toLowerCase().trim();
+        const catName = (activity.category || '').toLowerCase().trim();
+
         totalPoints += points;
-        if (entry.details) details.push(`${activity.activity_name}: ${entry.details}`);
+
+        let handledAsSpecial = false;
+
+        // On Time
+        if (actName === 'arrived on time' && catName === 'meeting attendance') {
+          onTimeDetail = entry.details ? `${points} (${entry.details})` : points;
+          handledAsSpecial = true;
+        }
+        // Attendance
+        else if (actName === 'attend a club meeting' && catName === 'meeting attendance') {
+          attendanceDetail = entry.details ? `${points} (${entry.details})` : points;
+          handledAsSpecial = true;
+        }
+        // Streak
+        else if ((actName.includes('streak') || actName.includes('3-meeting')) && catName === 'meeting attendance') {
+          streakPoints = points;
+          handledAsSpecial = true;
+        }
+
+        // Category Totals
+        if (catName === 'meeting roles') {
+          meetingRolesPts += points;
+        } else if (catName === 'meeting awards') {
+          meetingAwardsPts += points;
+        } else if (catName.includes('replacement')) {
+          replacementPts += points;
+        } else if (catName === 'guest') {
+          guestPts += points;
+        } else if (catName.includes('events participation') || catName.includes('events') || catName.includes('toastmasters events')) {
+          eventsAttendedPts += points;
+        }
+
+        if (!handledAsSpecial && entry.details) {
+          details.push(`${activity.activity_name}: ${entry.details}`);
+        }
       });
 
-      const row = [index + 1, member.id, member.name, ...categories.map(cat => categoryTotals[cat] || 0), details.join('; '), totalPoints];
+      const row = [
+        index + 1,
+        member.id,
+        member.name,
+        onTimeDetail,
+        attendanceDetail,
+        streakPoints,
+        meetingRolesPts,
+        meetingAwardsPts,
+        replacementPts,
+        guestPts,
+        eventsAttendedPts,
+        details.join('; '),
+        totalPoints
+      ];
       sheet.addRow(row);
+    });
+
+    // Apply borders and fonts to all sheet rows
+    sheet.eachRow((row, rowNumber) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+          left: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+          bottom: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+          right: { style: 'thin', color: { argb: 'FFD3D3D3' } }
+        };
+        if (rowNumber > 1) {
+          cell.font = { name: 'Segoe UI', size: 10 };
+        }
+      });
     });
 
     sheet.autoFilter = {

@@ -117,7 +117,8 @@ app.get('/api/data', requireAuth, async (req, res) => {
     activity: a.activity_name,
     category: a.category,
     points: a.points,
-    requiresDetails: a.requires_details
+    requiresDetails: a.requires_details,
+    hasCount: a.has_count || false
   }));
 
   res.json({
@@ -141,7 +142,8 @@ app.post('/api/points', requireAdmin, async (req, res) => {
     activity_name: p.activity,
     category: p.category,
     points: p.points,
-    requires_details: !!p.requiresDetails
+    requires_details: !!p.requiresDetails,
+    has_count: !!p.hasCount
   }));
 
   if (toUpsert.length > 0) {
@@ -243,13 +245,13 @@ app.post('/api/meeting-name/:date', requireAdmin, async (req, res) => {
 
 app.get('/api/entries/:date', requireAdmin, async (req, res) => {
   const date = req.params.date;
-  const { data: logs } = await supabase.from('member_activity_logs').select('member_id, activity_id, details').eq('date', date);
+  const { data: logs } = await supabase.from('member_activity_logs').select('member_id, activity_id, details, count').eq('date', date);
 
   const result = {};
   if (logs) {
     logs.forEach(log => {
       if (!result[log.member_id]) result[log.member_id] = [];
-      result[log.member_id].push({ id: log.activity_id, details: log.details || '' });
+      result[log.member_id].push({ id: log.activity_id, details: log.details || '', count: log.count || 1 });
     });
   }
   res.json(result);
@@ -279,7 +281,8 @@ app.post('/api/entries/:date', requireAdmin, async (req, res) => {
           date: date,
           member_id: memberId,
           activity_id: act.id,
-          details: act.details || ''
+          details: act.details || '',
+          count: act.count || 1
         });
       }
     });
@@ -319,7 +322,7 @@ app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
 
   const { data: logs, error: err } = await supabase
     .from('member_activity_logs')
-    .select('member_id, activities(points), date')
+    .select('member_id, activities(points), date, count')
     .gte('date', startDate)
     .lte('date', endDate);
 
@@ -333,7 +336,8 @@ app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
   (logs || []).forEach(log => {
     datesSeen.add(log.date);
     if (log.activities && log.activities.points) {
-      totals[log.member_id] = (totals[log.member_id] || 0) + log.activities.points;
+      const mult = log.count || 1;
+      totals[log.member_id] = (totals[log.member_id] || 0) + (log.activities.points * mult);
     }
   });
 
@@ -367,7 +371,8 @@ app.get('/api/podium/:month', async (req, res) => {
       .select(`
           member_id,
           activities(points),
-          date
+          date,
+          count
       `)
       .gte('date', startDate)
       .lte('date', endDate);
@@ -382,7 +387,7 @@ app.get('/api/podium/:month', async (req, res) => {
   });
 
   (logs || []).forEach(log => {
-    const pts = log.activities?.points || 0;
+    const pts = (log.activities?.points || 0) * (log.count || 1);
     totals[log.member_id] += pts;
   });
 
@@ -410,7 +415,7 @@ app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
 
   const { data: logs, error: logsError } = await supabase
     .from('member_activity_logs')
-    .select('member_id, date, details, activity_id, activities(activity_name, points)')
+    .select('member_id, date, details, activity_id, count, activities(activity_name, points)')
     .gte('date', startDate)
     .lte('date', endDate);
 
@@ -441,13 +446,15 @@ app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
     if (!memberDates[log.member_id][log.date]) {
       memberDates[log.member_id][log.date] = { weekStart: log.date, meetingName: meetingsByDate[log.date] || `Meeting ${log.date}`, activities: [] };
     }
-    const pts = log.activities?.points || 0;
+    const mult = log.count || 1;
+    const pts = (log.activities?.points || 0) * mult;
     totals[log.member_id] += pts;
     memberDates[log.member_id][log.date].activities.push({
       id: log.activity_id,
       activity: log.activities?.activity_name || 'Unknown',
       points: pts,
-      details: log.details || ''
+      details: log.details || '',
+      count: mult
     });
   });
 
@@ -552,7 +559,8 @@ app.get('/api/report/:month', requireAuth, async (req, res) => {
       memberLogs.forEach(entry => {
         const activity = (acts || []).find(p => p.id === entry.activity_id);
         if (!activity) return;
-        const points = activity.points || 0;
+        const mult = entry.count || 1;
+        const points = (activity.points || 0) * mult;
         const actName = (activity.activity_name || '').toLowerCase().trim();
         const catName = (activity.category || '').toLowerCase().trim();
 
@@ -589,8 +597,12 @@ app.get('/api/report/:month', requireAuth, async (req, res) => {
           eventsAttendedPts += points;
         }
 
-        if (!handledAsSpecial && entry.details) {
-          details.push(`${activity.activity_name}: ${entry.details}`);
+        if (!handledAsSpecial) {
+          if (entry.details) {
+            details.push(`${activity.activity_name}${mult > 1 ? ` (x${mult})` : ''}: ${entry.details}`);
+          } else if (mult > 1) {
+            details.push(`${activity.activity_name} (x${mult})`);
+          }
         }
       });
 

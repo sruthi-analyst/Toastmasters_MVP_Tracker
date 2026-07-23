@@ -13,6 +13,29 @@
     let leaderboardCache = {};
     let rankEmojis = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
+    const categoryOrder = [
+        'meeting attendance',
+        'meeting roles',
+        'meeting awards',
+        'last minute replacements',
+        'last minute replacement',
+        'replacement',
+        'guest',
+        'toastmasters events participation',
+        'events participation'
+    ];
+
+    function getSortedCategories(grouped) {
+        return Object.keys(grouped).sort((a, b) => {
+            const idxA = categoryOrder.indexOf(a.toLowerCase().trim());
+            const idxB = categoryOrder.indexOf(b.toLowerCase().trim());
+            if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+            if (idxA !== -1) return -1;
+            if (idxB !== -1) return 1;
+            return a.localeCompare(b);
+        });
+    }
+
     const app = document.getElementById('mvpBody');
     const toastEl = document.getElementById('mvpToast');
 
@@ -67,8 +90,14 @@
     function normalizeEntryValue(value) {
         if (!Array.isArray(value)) return [];
         return value.map(item => {
-            if (typeof item === 'string') return { id: item, details: '' };
-            if (item && typeof item === 'object' && item.id) return { id: String(item.id), details: String(item.details || '') };
+            if (typeof item === 'string') return { id: item, details: '', count: 1 };
+            if (item && typeof item === 'object' && item.id) {
+                return {
+                    id: String(item.id),
+                    details: String(item.details || ''),
+                    count: Math.max(1, parseInt(item.count, 10) || 1)
+                };
+            }
             return null;
         }).filter(Boolean);
     }
@@ -138,7 +167,7 @@
         } else {
             activeMembers.forEach(m => {
                 const checked = normalizeEntryValue(weekData[m.id] || []);
-                const total = checked.reduce((s, a) => s + pointsById(a.id), 0);
+                const total = checked.reduce((s, a) => s + (pointsById(a.id) * (a.count || 1)), 0);
                 const isOpen = openMemberId === m.id;
                 html += `<div class="mvp-member-card ${isOpen ? 'open' : ''}" data-mid="${m.id}">
         <div class="mvp-member-head" data-toggle="${m.id}">
@@ -146,23 +175,25 @@
           <span class="mvp-member-total">${total} pts this week</span>
         </div>
         <div class="mvp-member-body">`;
-                Object.keys(grouped).forEach(cat => {
+                getSortedCategories(grouped).forEach(cat => {
                     html += `<div class="mvp-cat-mini">${escapeHtml(cat)}</div>`;
                     grouped[cat].forEach(p => {
                         const entryItem = checked.find(item => item.id === p.id) || null;
                         const isChecked = !!entryItem;
                         const details = entryItem?.details || '';
                         const requiresDetails = !!p.requiresDetails;
+                        const hasCount = !!p.hasCount;
                         const missingDetails = isChecked && requiresDetails && !details;
                         html += `<div class="mvp-checkline">
             <input type="checkbox" data-mid="${m.id}" data-aid="${p.id}" ${isChecked ? 'checked' : ''}>
             <label>${escapeHtml(p.activity)}</label>
+            ${hasCount ? `<input type="number" min="1" data-count-mid="${m.id}" data-count-aid="${p.id}" value="${entryItem?.count || 1}" class="mvp-entry-count-input" style="width: 50px; margin-left: 8px; display: ${isChecked ? 'inline-block' : 'none'}; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px;" autocomplete="off">` : ''}
             <span class="pt">+${p.points}</span>
           </div>`;
-                        if (isChecked && requiresDetails) {
-                            html += `<div class="mvp-entry-detail-row">
+                        if (requiresDetails) {
+                            html += `<div class="mvp-entry-detail-row" style="display: ${isChecked ? 'block' : 'none'};">
               <input type="text" data-detail-mid="${m.id}" data-detail-aid="${p.id}" value="${escapeHtml(details)}" placeholder="Required details" class="mvp-entry-detail${missingDetails ? ' missing' : ''}" autocomplete="off">
-              ${missingDetails ? '<div class="mvp-entry-detail-note">Details required</div>' : ''}
+              <div class="mvp-entry-detail-note" style="display: ${missingDetails ? 'block' : 'none'};">Details required</div>
             </div>`;
                         }
                     });
@@ -186,6 +217,41 @@
             toast('Meeting name saved');
         });
 
+        async function validateAndSaveCard(card) {
+            const mid = card.dataset.mid;
+            const data = await loadEntry(currentDate);
+            const items = normalizeEntryValue(data[mid] || []);
+            let hasMissing = false;
+            let firstMissingInput = null;
+
+            items.forEach(item => {
+                const activity = getPointActivity(item.id);
+                if (activity?.requiresDetails && !item.details.trim()) {
+                    hasMissing = true;
+                    const detailInput = card.querySelector(`input[data-detail-mid="${mid}"][data-detail-aid="${item.id}"]`);
+                    if (detailInput) {
+                        detailInput.classList.add('missing');
+                        if (!firstMissingInput) firstMissingInput = detailInput;
+                        const detailRow = detailInput.closest('.mvp-entry-detail-row');
+                        if (detailRow) {
+                            const note = detailRow.querySelector('.mvp-entry-detail-note');
+                            if (note) note.style.display = 'block';
+                        }
+                    }
+                }
+            });
+
+            if (hasMissing) {
+                toast('Please fill in the required details before closing');
+                if (firstMissingInput) firstMissingInput.focus();
+                return false;
+            }
+
+            card.classList.remove('open');
+            await saveEntry(currentDate, data);
+            return true;
+        }
+
         document.querySelectorAll('[data-toggle]').forEach(el => {
             el.addEventListener('click', async () => {
                 const mid = el.dataset.toggle;
@@ -195,20 +261,25 @@
                 const isClosing = card.classList.contains('open');
 
                 if (isClosing) {
-                    // Close it and save
-                    card.classList.remove('open');
-                    const data = await loadEntry(currentDate);
-                    await saveEntry(currentDate, data);
-                    toast('Points saved');
+                    const saved = await validateAndSaveCard(card);
+                    if (saved) {
+                        openMemberId = null;
+                        toast('Points saved');
+                    }
                 } else {
-                    // Open it (and optionally close others to act like an accordion)
-                    document.querySelectorAll('.mvp-member-card.open').forEach(async c => {
-                        c.classList.remove('open');
-                        // If closing another member's card, save their data too
-                        const data = await loadEntry(currentDate);
-                        await saveEntry(currentDate, data);
-                    });
-                    card.classList.add('open');
+                    const openCards = document.querySelectorAll('.mvp-member-card.open');
+                    let canProceed = true;
+                    for (const c of openCards) {
+                        const saved = await validateAndSaveCard(c);
+                        if (!saved) {
+                            canProceed = false;
+                            break;
+                        }
+                    }
+                    if (canProceed) {
+                        card.classList.add('open');
+                        openMemberId = mid;
+                    }
                 }
             });
         });
@@ -222,36 +293,76 @@
                 const existing = items.find(item => item.id === aid);
                 const activity = getPointActivity(aid);
                 const requiresDetails = !!activity?.requiresDetails;
+                const hasCount = !!activity?.hasCount;
                 if (e.target.checked) {
-                    if (!existing) items.push({ id: aid, details: '' });
+                    if (!existing) items.push({ id: aid, details: '', count: 1 });
                 } else {
                     const idx = items.findIndex(item => item.id === aid);
                     if (idx !== -1) items.splice(idx, 1);
                 }
                 data[mid] = items;
 
-                // Update local cache but DO NOT save to server or fully re-render yet
+                // Update local cache but DO NOT save to server yet
                 entryCache[currentDate] = data;
 
                 // Instantly update the points total on the screen
-                const total = items.reduce((s, a) => s + pointsById(a.id), 0);
+                const total = items.reduce((s, a) => s + (pointsById(a.id) * (a.count || 1)), 0);
                 const totalSpan = document.querySelector(`.mvp-member-card[data-mid="${mid}"] .mvp-member-total`);
                 if (totalSpan) totalSpan.textContent = `${total} pts this week`;
 
-                if (e.target.checked && requiresDetails) {
-                    // For activities requiring details, we must save and re-render to show the input box
-                    await saveEntry(currentDate, data);
-                    renderEntry();
-                    setTimeout(() => {
-                        const detailInput = document.querySelector(`input[data-detail-mid="${mid}"][data-detail-aid="${aid}"]`);
-                        if (detailInput) detailInput.focus();
-                    }, 100);
+                const checkline = e.target.closest('.mvp-checkline');
+
+                if (hasCount) {
+                    const countInput = checkline?.querySelector('.mvp-entry-count-input');
+                    if (countInput) {
+                        countInput.style.display = e.target.checked ? 'inline-block' : 'none';
+                        if (e.target.checked) {
+                            countInput.value = '1';
+                            const item = items.find(item => item.id === aid);
+                            if (item) item.count = 1;
+                        } else {
+                            countInput.value = '';
+                            const item = items.find(item => item.id === aid);
+                            if (item) item.count = 1;
+                        }
+                    }
+                }
+
+                if (requiresDetails) {
+                    const detailRow = checkline?.nextElementSibling;
+                    if (detailRow && detailRow.classList.contains('mvp-entry-detail-row')) {
+                        if (e.target.checked) {
+                            detailRow.style.display = 'block';
+                            const input = detailRow.querySelector('input');
+                            if (input) {
+                                input.focus();
+                                const note = detailRow.querySelector('.mvp-entry-detail-note');
+                                if (note) note.style.display = !input.value.trim() ? 'block' : 'none';
+                                if (!input.value.trim()) {
+                                    input.classList.add('missing');
+                                } else {
+                                    input.classList.remove('missing');
+                                }
+                            }
+                        } else {
+                            detailRow.style.display = 'none';
+                            const input = detailRow.querySelector('input');
+                            if (input) {
+                                input.value = '';
+                                input.classList.remove('missing');
+                            }
+                            const note = detailRow.querySelector('.mvp-entry-detail-note');
+                            if (note) note.style.display = 'none';
+                            const item = items.find(item => item.id === aid);
+                            if (item) item.details = '';
+                        }
+                    }
                 }
             });
         });
 
         document.querySelectorAll('input[type=text][data-detail-aid]').forEach(inp => {
-            inp.addEventListener('change', async (e) => {
+            const handleDetailInput = async (e) => {
                 const mid = e.target.dataset.detailMid;
                 const aid = e.target.dataset.detailAid;
                 const data = await loadEntry(currentDate);
@@ -260,11 +371,45 @@
                 if (item) {
                     item.details = e.target.value.trim();
                     data[mid] = items;
-                    await saveEntry(currentDate, data);
-                    renderEntry();
-                    toast('Details saved');
+                    entryCache[currentDate] = data;
                 }
-            });
+
+                const val = e.target.value.trim();
+                const note = e.target.closest('.mvp-entry-detail-row')?.querySelector('.mvp-entry-detail-note');
+                if (val) {
+                    e.target.classList.remove('missing');
+                    if (note) note.style.display = 'none';
+                } else {
+                    e.target.classList.add('missing');
+                    if (note) note.style.display = 'block';
+                }
+            };
+            inp.addEventListener('input', handleDetailInput);
+            inp.addEventListener('change', handleDetailInput);
+        });
+
+        document.querySelectorAll('input.mvp-entry-count-input').forEach(inp => {
+            const handleCountInput = async (e) => {
+                const mid = e.target.dataset.countMid;
+                const aid = e.target.dataset.countAid;
+                let val = parseInt(e.target.value, 10);
+                if (isNaN(val) || val < 1) val = 1;
+                e.target.value = val;
+                const data = await loadEntry(currentDate);
+                const items = normalizeEntryValue(data[mid] || []);
+                const item = items.find(item => item.id === aid);
+                if (item) {
+                    item.count = val;
+                    data[mid] = items;
+                    entryCache[currentDate] = data;
+                }
+
+                const total = items.reduce((s, a) => s + (pointsById(a.id) * (a.count || 1)), 0);
+                const totalSpan = document.querySelector(`.mvp-member-card[data-mid="${mid}"] .mvp-member-total`);
+                if (totalSpan) totalSpan.textContent = `${total} pts this week`;
+            };
+            inp.addEventListener('input', handleCountInput);
+            inp.addEventListener('change', handleCountInput);
         });
     }
 
@@ -323,7 +468,7 @@
                             } else {
                                 w.activities.forEach(a => {
                                     html += `<div class="mvp-detail-activity">
-                  <div class="mvp-detail-activity-main">${escapeHtml(a.activity)}</div>
+                  <div class="mvp-detail-activity-main">${escapeHtml(a.activity)}${a.count > 1 ? ` (x${a.count})` : ''}</div>
                   ${a.details ? `<div class="mvp-detail-activity-meta">${escapeHtml(a.details)}</div>` : ''}
                   <span class="pt">+${a.points}</span>
                 </div>`;
@@ -561,7 +706,7 @@
         });
 
         let html = '';
-        Object.keys(grouped).forEach(cat => {
+        getSortedCategories(grouped).forEach(cat => {
             html += `<div class="mvp-section-title">${escapeHtml(cat)}</div>`;
             html += `<table class="mvp-table"><tbody>`;
             grouped[cat].forEach(p => {
@@ -571,6 +716,7 @@
         <td>
           <label class="mvp-details-radio"><input type="radio" name="details-${p.id}" data-edit-details-id="${p.id}" data-edit-details-mode="optional" ${p.requiresDetails ? '' : 'checked'}> Optional</label>
           <label class="mvp-details-radio"><input type="radio" name="details-${p.id}" data-edit-details-id="${p.id}" data-edit-details-mode="required" ${p.requiresDetails ? 'checked' : ''}> Required</label>
+          <label class="mvp-details-radio" style="margin-left:8px;"><input type="checkbox" data-edit-count-id="${p.id}" ${p.hasCount ? 'checked' : ''}> Count Box</label>
         </td>
         <td style="width:36px;text-align:right;"><button class="mvp-btn danger" data-del-activity="${p.id}">×</button></td>
       </tr>`;
@@ -581,11 +727,12 @@
         html += `<div class="mvp-section-title">Add activity</div>
   <div class="mvp-row-form">
     <input type="text" id="newCategory" placeholder="Category" list="catList">
-    <datalist id="catList">${Object.keys(grouped).map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
+    <datalist id="catList">${getSortedCategories(grouped).map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
     <input type="text" id="newActivity" placeholder="Activity name">
     <input type="number" id="newPoints" placeholder="Points">
     <label class="mvp-details-radio"><input type="radio" name="newDetailsMode" value="optional" checked> Optional</label>
     <label class="mvp-details-radio"><input type="radio" name="newDetailsMode" value="required"> Required</label>
+    <label class="mvp-details-radio" style="margin-left:8px;"><input type="checkbox" id="newHasCount"> Count Box</label>
     <button class="mvp-btn" id="addActivityBtn">Add</button>
   </div>
   <div class="mvp-section-title">Rank emoji settings</div>
@@ -619,6 +766,13 @@
                 if (p) { p.requiresDetails = mode === 'required'; await savePointSystem(); toast('Updated requirement'); }
             });
         });
+        document.querySelectorAll('[data-edit-count-id]').forEach(inp => {
+            inp.addEventListener('change', async (e) => {
+                const id = e.target.dataset.editCountId;
+                const p = pointSystem.find(p => p.id === id);
+                if (p) { p.hasCount = e.target.checked; await savePointSystem(); toast('Updated count box requirement'); }
+            });
+        });
         document.querySelectorAll('[data-del-activity]').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 pointSystem = pointSystem.filter(p => p.id !== e.target.dataset.delActivity);
@@ -643,8 +797,9 @@
             const pts = Number(document.getElementById('newPoints').value) || 0;
             const mode = document.querySelector('input[name="newDetailsMode"]:checked')?.value || 'optional';
             const requiresDetails = mode === 'required';
+            const hasCount = document.getElementById('newHasCount')?.checked || false;
             if (!cat || !act) return;
-            pointSystem.push({ id: uid(), category: cat, activity: act, points: pts, requiresDetails });
+            pointSystem.push({ id: uid(), category: cat, activity: act, points: pts, requiresDetails, hasCount });
             await savePointSystem();
             renderPoints();
             toast('Activity added');

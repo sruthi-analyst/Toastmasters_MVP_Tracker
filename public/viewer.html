@@ -39,6 +39,29 @@ let leaderboardOpenMemberId = null;
 let leaderboardCache = {};
 let rankEmojis = {1:'🥇', 2:'🥈', 3:'🥉'};
 
+const categoryOrder = [
+  'meeting attendance',
+  'meeting roles',
+  'meeting awards',
+  'last minute replacements',
+  'last minute replacement',
+  'replacement',
+  'guest',
+  'toastmasters events participation',
+  'events participation'
+];
+
+function getSortedCategories(grouped) {
+  return Object.keys(grouped).sort((a, b) => {
+    const idxA = categoryOrder.indexOf(a.toLowerCase().trim());
+    const idxB = categoryOrder.indexOf(b.toLowerCase().trim());
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return a.localeCompare(b);
+  });
+}
+
 const app = document.getElementById('mvpBody');
 const toastEl = document.getElementById('mvpToast');
 
@@ -147,7 +170,7 @@ async function renderLeaderboard(forceRefresh = false){
             } else {
               w.activities.forEach(a=>{
                 html += `<div class="mvp-detail-activity">
-                  <div class="mvp-detail-activity-main">${escapeHtml(a.activity)}</div>
+                  <div class="mvp-detail-activity-main">${escapeHtml(a.activity)}${a.count > 1 ? ` (x${a.count})` : ''}</div>
                   ${a.details ? `<div class="mvp-detail-activity-meta">${escapeHtml(a.details)}</div>` : ''}
                   <span class="pt">+${a.points}</span>
                 </div>`;
@@ -204,7 +227,7 @@ function renderPoints(){
   const grouped = {};
   pointSystem.forEach(p => { (grouped[p.category] = grouped[p.category] || []).push(p); });
   let html = '';
-  Object.keys(grouped).forEach(cat => {
+  getSortedCategories(grouped).forEach(cat => {
     html += `<div class="mvp-section-title">${escapeHtml(cat)}</div><table class="mvp-table"><tbody>`;
     grouped[cat].forEach(p => {
       html += `<tr><td>

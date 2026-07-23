@@ -1,3 +1,6 @@
 node_modules/
 .env
 data/db.json
+migrate.js
+supabase-schema.sql
+TECHNICAL_REVIEW_GUIDE.md

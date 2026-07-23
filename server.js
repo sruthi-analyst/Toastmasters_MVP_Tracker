@@ -39,7 +39,7 @@ async function ensureConfig() {
 ensureConfig();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave: false,
@@ -110,7 +110,7 @@ app.get('/api/data', requireAuth, async (req, res) => {
   const { data: actData } = await supabase.from('activities').select('*');
   const { data: memData } = await supabase.from('members').select('*');
   const { data: configData } = await supabase.from('config').select('rank_emojis').eq('id', 1).single();
-  
+
   // Transform to match old frontend format
   const pointSystem = (actData || []).map(a => ({
     id: a.id,
@@ -135,7 +135,7 @@ app.get('/api/viewer-data', requireAuth, async (req, res) => {
 app.post('/api/points', requireAdmin, async (req, res) => {
   const { pointSystem } = req.body || {};
   if (!Array.isArray(pointSystem)) return res.status(400).json({ error: 'pointSystem must be an array' });
-  
+
   const toUpsert = pointSystem.map(p => ({
     id: p.id,
     activity_name: p.activity,
@@ -143,11 +143,11 @@ app.post('/api/points', requireAdmin, async (req, res) => {
     points: p.points,
     requires_details: !!p.requiresDetails
   }));
-  
+
   if (toUpsert.length > 0) {
     await supabase.from('activities').upsert(toUpsert);
   }
-  
+
   // Delete missing ones
   const ids = toUpsert.map(u => u.id);
   if (ids.length > 0) {
@@ -156,7 +156,7 @@ app.post('/api/points', requireAdmin, async (req, res) => {
     // If empty array passed, delete all
     await supabase.from('activities').delete().neq('id', '0'); // Hack to delete all
   }
-  
+
   res.json({ ok: true });
 });
 
@@ -175,19 +175,47 @@ app.post('/api/rank-emojis', requireAdmin, async (req, res) => {
 app.post('/api/members', requireAdmin, async (req, res) => {
   const { members } = req.body || {};
   if (!Array.isArray(members)) return res.status(400).json({ error: 'members must be an array' });
-  
-  const toUpsert = members.map(m => ({ id: m.id, name: m.name }));
+
+  // Fetch existing avatars to prevent overwriting them during member lists update
+  const { data: existing } = await supabase.from('members').select('id, avatar');
+  const avatarMap = {};
+  (existing || []).forEach(e => {
+    avatarMap[e.id] = e.avatar;
+  });
+
+  const toUpsert = members.map(m => ({
+    id: m.id,
+    name: m.name,
+    avatar: avatarMap[m.id] || null
+  }));
+
   if (toUpsert.length > 0) {
     await supabase.from('members').upsert(toUpsert);
   }
-  
+
   const ids = toUpsert.map(m => m.id);
   if (ids.length > 0) {
     await supabase.from('members').delete().not('id', 'in', `(${ids.join(',')})`);
   } else {
     await supabase.from('members').delete().neq('id', '0');
   }
-  
+
+  res.json({ ok: true });
+});
+
+app.post('/api/members/:id/avatar', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { avatar } = req.body || {};
+  const { error } = await supabase
+    .from('members')
+    .update({ avatar: avatar || null })
+    .eq('id', id);
+
+  if (error) {
+    console.error('Error updating member avatar:', error);
+    return res.status(500).json({ error: error.message });
+  }
+
   res.json({ ok: true });
 });
 
@@ -207,7 +235,7 @@ app.post('/api/meeting-name/:date', requireAdmin, async (req, res) => {
 app.get('/api/entries/:date', requireAdmin, async (req, res) => {
   const date = req.params.date;
   const { data: logs } = await supabase.from('member_activity_logs').select('member_id, activity_id, details').eq('date', date);
-  
+
   const result = {};
   if (logs) {
     logs.forEach(log => {
@@ -255,26 +283,39 @@ app.post('/api/entries/:date', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+function getMonthDateRange(month) {
+  if (!month || !month.includes('-')) {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    month = `${y}-${m}`;
+  }
+  const [year, monthStr] = month.split('-');
+  const yearNum = parseInt(year, 10);
+  const monthNum = parseInt(monthStr, 10);
+  const startDate = `${year}-${monthStr}-01`;
+  const lastDay = new Date(yearNum, monthNum, 0).getDate();
+  const endDate = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+  return { startDate, endDate };
+}
+
 app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
-  const startDate = `${month}-01`;
-  const endDate = `${month}-31`; // simplified, Postgres accepts 31 even for 30-day months if queried with <= usually, but to be safe we'll use LIKE or >= and < next month. Let's just use LIKE for simplicity if it was text, but it's DATE.
+  const { startDate, endDate } = getMonthDateRange(month);
 
   const { data: members } = await supabase.from('members').select('*');
-  const { data: stats } = await supabase.rpc('get_leaderboard_tally', { month_prefix: month });
-  // Wait, I can't guarantee RPC exists. Let's do it with a join.
-  
+
   const { data: logs, error: err } = await supabase
     .from('member_activity_logs')
     .select('member_id, activities(points), date')
-    .gte('date', `${month}-01`)
-    .lte('date', `${month}-31`);
+    .gte('date', startDate)
+    .lte('date', endDate);
 
   if (err) console.error(err);
 
   const totals = {};
   members.forEach(m => { totals[m.id] = 0; });
-  
+
   const datesSeen = new Set();
 
   (logs || []).forEach(log => {
@@ -291,29 +332,86 @@ app.get('/api/leaderboard/:month', requireAuth, async (req, res) => {
   res.json({ weeksCounted: datesSeen.size, rows });
 });
 
+// PUBLIC API - Landing Page Podium
+app.get('/api/podium/:month', async (req, res) => {
+  const month = req.params.month;
+  const { startDate, endDate } = getMonthDateRange(month);
+
+  const { data: members, error: membersError } =
+    await supabase
+      .from('members')
+      .select('*');
+
+  if (membersError)
+    return res.status(500).json({ error: membersError.message });
+
+  const { data: logs, error: logsError } =
+    await supabase
+      .from('member_activity_logs')
+      .select(`
+          member_id,
+          activities(points),
+          date
+      `)
+      .gte('date', startDate)
+      .lte('date', endDate);
+
+  if (logsError)
+    return res.status(500).json({ error: logsError.message });
+
+  const totals = {};
+
+  (members || []).forEach(member => {
+    totals[member.id] = 0;
+  });
+
+  (logs || []).forEach(log => {
+    const pts = log.activities?.points || 0;
+    totals[log.member_id] += pts;
+  });
+
+  const podium = (members || [])
+    .map(member => ({
+      id: member.id,
+      name: member.name,
+      points: totals[member.id],
+      avatar: member.avatar
+    }))
+    .sort((a, b) => b.points - a.points)
+    .slice(0, 3);
+
+  res.json(podium);
+});
+
 app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
   const month = req.params.month; // YYYY-MM
+  const { startDate, endDate } = getMonthDateRange(month);
+
   const { data: members } = await supabase.from('members').select('*');
-  
-  const { data: logs } = await supabase
+
+  const { data: logs, error: logsError } = await supabase
     .from('member_activity_logs')
     .select('member_id, date, details, activity_id, activities(activity_name, points)')
-    .gte('date', `${month}-01`)
-    .lte('date', `${month}-31`);
+    .gte('date', startDate)
+    .lte('date', endDate);
+
+  if (logsError) {
+    console.error('Error fetching logs for leaderboard-details:', logsError);
+  }
 
   const { data: meetings } = await supabase
     .from('meetings')
     .select('date, name')
-    .gte('date', `${month}-01`)
-    .lte('date', `${month}-31`);
-    
+    .gte('date', startDate)
+    .lte('date', endDate);
+
   const meetingsByDate = {};
   (meetings || []).forEach(m => { meetingsByDate[m.date] = m.name; });
 
   const datesSeen = new Set();
   const memberDates = {};
   const totals = {};
-  
+
   (members || []).forEach(m => {
     totals[m.id] = 0;
     memberDates[m.id] = {};
@@ -360,11 +458,12 @@ app.get('/api/leaderboard-details/:month', requireAuth, async (req, res) => {
 
 app.get('/api/report/:month', requireAuth, async (req, res) => {
   const month = req.params.month;
-  
+  const { startDate, endDate } = getMonthDateRange(month);
+
   const { data: acts } = await supabase.from('activities').select('*');
   const { data: members } = await supabase.from('members').select('*');
-  const { data: meetings } = await supabase.from('meetings').select('*').gte('date', `${month}-01`).lte('date', `${month}-31`).order('date');
-  const { data: logs } = await supabase.from('member_activity_logs').select('*').gte('date', `${month}-01`).lte('date', `${month}-31`);
+  const { data: meetings } = await supabase.from('meetings').select('*').gte('date', startDate).lte('date', endDate).order('date');
+  const { data: logs } = await supabase.from('member_activity_logs').select('*').gte('date', startDate).lte('date', endDate);
 
   const categoryNames = [...new Set((acts || []).map(p => p.category))];
   const categories = categoryNames.sort();
@@ -383,7 +482,7 @@ app.get('/api/report/:month', requireAuth, async (req, res) => {
 
     (members || []).forEach((member, index) => {
       const memberLogs = (logs || []).filter(l => l.date === meeting.date && l.member_id === member.id);
-      
+
       const categoryTotals = {};
       const details = [];
       let totalPoints = 0;
@@ -425,18 +524,16 @@ app.get('/viewer.html', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'viewer.html'));
 });
 
+app.get('/index.html', requireAdmin, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 app.get('/mvp-tracker.html', (req, res) => {
-  res.redirect('/');
+  res.redirect('/index.html');
 });
 
 app.get('/', (req, res) => {
-  if (!(req.session && req.session.role)) {
-    return res.redirect('/login.html');
-  }
-  if (req.session.role !== 'admin') {
-    return res.redirect('/viewer.html');
-  }
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'public', 'landing.html'));
 });
 
 app.use(express.static(path.join(__dirname, 'public')));

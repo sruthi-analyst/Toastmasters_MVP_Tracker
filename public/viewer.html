@@ -61,7 +61,7 @@ async function api(path, opts){
 async function loadAll(){
   const data = await api('/api/viewer-data');
   pointSystem = data.pointSystem;
-  members = data.members;
+  members = (data.members || []).sort((a,b)=>a.name.localeCompare(b.name));
   rankEmojis = data.rankEmojis || rankEmojis;
   render();
 }
@@ -110,7 +110,7 @@ async function renderLeaderboard(){
     let lastPoints = null;
     rows.forEach((r,i)=>{
       if(lastPoints === null || r.points < lastPoints){
-        currentRank = i + 1;
+        currentRank++;
         lastPoints = r.points;
       }
       const pct = Math.round((r.points/maxPts)*100);

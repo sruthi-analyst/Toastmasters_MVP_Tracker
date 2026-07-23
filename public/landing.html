@@ -1,0 +1,112 @@
+Check if it is perfect:
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SETC-C2-TracKers</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/landing.css">
+</head>
+
+<body>
+
+  <!-- Star background -->
+  <div class="landing-bg">
+    <div class="landing-stars" id="stars"></div>
+  </div>
+
+  <!-- 16:9 viewport frame -->
+  <div class="stage" id="stage">
+
+    <!-- TOP: Club name + title -->
+    <header class="lp-header">
+      <div class="lp-club">Sri Eshwar Toastmasters &middot; Chapter 2</div>
+      <h1 class="lp-title">The Podium Performers</h1>
+      <p class="lp-sub">Celebrating top achievers of <span id="monthLabel">this month</span></p>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <div class="lp-content">
+
+      <!-- LEFT : Podium -->
+      <section class="lp-podium" id="podiumSection">
+
+        <div class="podium-loading" id="podiumLoading">
+          <div class="podium-spinner"></div>
+          <span>Tallying scores…</span>
+        </div>
+
+        <div class="podium-stage" id="podiumStage" style="display:none"></div>
+
+      </section>
+
+
+      <!-- RIGHT : Sphere Buttons -->
+      <section class="lp-spheres">
+
+        <p class="lp-spheres-label">Jump into a tracker</p>
+
+        <div class="lp-spheres-row">
+
+          <!-- MVP Tracker -->
+          <a href="/login.html" class="sphere-link">
+            <div class="sphere">
+
+              <svg class="sphere-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+
+                <ellipse cx="100" cy="42" rx="82" ry="16" fill="none" stroke="rgba(201,160,78,0.6)"
+                  stroke-width="1.3" />
+
+                <ellipse cx="100" cy="72" rx="96" ry="19" fill="none" stroke="rgba(201,160,78,0.6)"
+                  stroke-width="1.3" />
+
+                <ellipse cx="100" cy="130" rx="96" ry="19" fill="none" stroke="rgba(201,160,78,0.6)"
+                  stroke-width="1.3" />
+
+                <ellipse cx="100" cy="158" rx="82" ry="16" fill="none" stroke="rgba(201,160,78,0.6)"
+                  stroke-width="1.3" />
+
+                <ellipse cx="100" cy="100" rx="100" ry="22" fill="none" stroke="rgba(240,208,128,0.9)"
+                  stroke-width="2" />
+
+                <ellipse cx="100" cy="100" rx="28" ry="100" fill="none" stroke="rgba(201,160,78,0.5)"
+                  stroke-width="1.3" />
+
+                <ellipse cx="100" cy="100" rx="65" ry="100" fill="none" stroke="rgba(201,160,78,0.5)"
+                  stroke-width="1.3" />
+
+                <ellipse cx="100" cy="100" rx="100" ry="100" fill="none" stroke="rgba(201,160,78,0.5)"
+                  stroke-width="1.3" />
+
+              </svg>
+
+              <div class="sphere-gloss"></div>
+
+              <div class="sphere-icon">🏆</div>
+
+              <div class="sphere-ribbon">MVP</div>
+
+            </div>
+
+            <span class="sphere-title">MVP Tracker</span>
+
+          </a>
+
+
+
+
+        </div>
+      </section>
+    </div>
+  </div>
+  <script src="/landing.js"></script>
+</body>
+
+</html>
